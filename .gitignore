@@ -1,0 +1,4 @@
+/.lake
+/tests/pbt/.lake
+__pycache__/
+*.pyc

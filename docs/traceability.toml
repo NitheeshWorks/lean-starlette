@@ -1,0 +1,26 @@
+# Traceability register: upstream behaviour -> Lean symbol -> theorem -> test.
+#
+# `scripts/traceability-check.py` validates it on every CI run: every
+# `realises`/`theorem` symbol must resolve, every `test` path must exist.
+#
+# status: implemented | partial | tested | excluded | deviation
+#   implemented  realised and proved
+#   partial      realised, proof incomplete or covering a subset
+#   tested       realised, deliberately tested rather than proved (say why)
+#   excluded     out of scope, rejected by name
+#   deviation    behaviour differs from upstream on purpose (say how)
+
+[meta]
+upstream_name = "Starlette"
+upstream_url = "https://github.com/Kludex/starlette"
+upstream_commit = "b7901fb908f0c6c3b8b6e495517cea6b2e77e66b"
+upstream_license = "BSD-3-Clause"
+
+# [[requirement]]
+# id = "..."                  # stable id, e.g. "routing.first-match"
+# upstream = "tests/test_x.py::test_y"   # or a docs section
+# title = "..."
+# status = "implemented"
+# realises = ["LeanStarlette.Foo.bar"]
+# theorem = ["LeanStarlette.Foo.bar_spec"]
+# test = ["tests/Conformance.lean::name"]

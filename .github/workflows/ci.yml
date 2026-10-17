@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The gate: the library and both test executables build, no proof is
+  # admitted, and every theorem reaches only Lean's three axioms.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: leanprover/lean-action@v1
+        with: { test: false, lint: false }
+      - name: No admitted proof
+        run: |
+          if grep -rn --include='*.lean' -w "sorry" LeanStarlette/; then
+            echo "::error::found 'sorry' under LeanStarlette/ - a proof is admitted"; exit 1
+          fi
+      - name: Axiom hygiene
+        run: lake env lean --run scripts/Axioms.lean LeanStarlette
+      - name: Property tests
+        run: lake exe props
+      - name: Conformance
+        run: lake exe conformance
+      - name: Traceability
+        run: python3 scripts/traceability-check.py
+
+  plausible:
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@v5
+      - uses: leanprover/lean-action@v1
+        with: { test: false, lint: false }
+      - name: Build and run the plausible suite
+        working-directory: tests/pbt
+        run: |
+          lake build
+          ./.lake/build/bin/pbt

@@ -1,0 +1,21 @@
+name = "pbt"
+defaultTargets = ["pbt"]
+
+# A separate package: the ONE place this project takes an external
+# dependency. The verified library and both test executables stay
+# dependency-free. Plausible is pinned to the release for this Lean minor.
+[[require]]
+name = "LeanStarlette"
+path = "../.."
+
+[[require]]
+name = "plausible"
+git = "https://github.com/leanprover-community/plausible"
+rev = "v4.35.0"
+
+[[lean_lib]]
+name = "Pbt"
+
+[[lean_exe]]
+name = "pbt"
+root = "Main"

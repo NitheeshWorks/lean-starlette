@@ -1,0 +1,45 @@
+    name = "LeanStarlette"
+    version = "0.1.0"
+    defaultTargets = ["LeanStarlette", "props", "conformance"]
+
+    # The verified library. Everything under LeanStarlette/ except Transport.lean is a
+    # total function and the proof surface; see CONTRIBUTING.md.
+    [[lean_lib]]
+    name = "LeanStarlette"
+
+    # Property tests for what is tested rather than proved. No dependencies, runs
+    # in well under a second: `lake exe props [seed]`.
+    [[lean_exe]]
+    name = "props"
+    root = "tests.Props"
+
+    # Conformance cases re-expressed from the upstream test suite:
+    # `lake exe conformance`. Each case names the upstream test it mirrors.
+    [[lean_exe]]
+    name = "conformance"
+    root = "tests.Conformance"
+
+[[require]]
+name = "LeanJson"
+git = "https://github.com/NitheeshWorks/lean-json"
+rev = "main"
+
+[[require]]
+name = "LeanMultipart"
+git = "https://github.com/NitheeshWorks/lean-multipart"
+rev = "main"
+
+[[require]]
+name = "LeanItsdangerous"
+git = "https://github.com/NitheeshWorks/lean-itsdangerous"
+rev = "main"
+
+[[require]]
+name = "LeanHttpx"
+git = "https://github.com/NitheeshWorks/lean-httpx"
+rev = "main"
+
+[[require]]
+name = "LeanJinja2"
+git = "https://github.com/NitheeshWorks/lean-jinja2"
+rev = "main"
