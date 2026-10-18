@@ -63,6 +63,10 @@ end Routing
 
 export Routing (Route Mount Router Starlette)
 
+/-- A bare `App` as an application (an ASGI app passed to `TestClient`):
+every path goes to it, with the default middleware around it. -/
+def Application.ofApp (a : App) : Application := { routes := [Mount "" (app := a)] }
+
 /-- The compile errors of an application's routes, with their paths. -/
 def Application.checkRoutes (a : Application) : List (String × String) :=
   go a.routes

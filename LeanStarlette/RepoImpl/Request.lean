@@ -41,6 +41,12 @@ def getlist (q : QueryParams) (key : String) : List String :=
 /-- `params.keys()`: each key once, in first-seen order. -/
 def keys (q : QueryParams) : List String := dedup (q.items.map (·.1))
 
+/-- `params.items()`: each key once with its last value. -/
+def dictItems (q : QueryParams) : List (String × String) := q.keys.map fun k => (k, (q.get? k).getD "")
+
+/-- `params.values()`. -/
+def values (q : QueryParams) : List String := q.dictItems.map (·.2)
+
 /-- `params.multi_items()`. -/
 def multiItems (q : QueryParams) : List (String × String) := q.items
 

@@ -24,3 +24,218 @@ upstream_license = "BSD-3-Clause"
 # realises = ["LeanStarlette.Foo.bar"]
 # theorem = ["LeanStarlette.Foo.bar_spec"]
 # test = ["tests/Conformance.lean::name"]
+
+[[requirement]]
+id = "routing.templates"
+upstream = "tests/test_routing.py::test_route_converters"
+title = "Path templates with str/int/float/uuid/path convertors (Keel.Route), whole-path anchored"
+status = "implemented"
+realises = ["Keel.PathTemplate.compile", "Keel.PathTemplate.match", "LeanStarlette.Routing.Route", "LeanStarlette.compileOr"]
+theorem = ["LeanStarlette.compile_match_url_path_for", "LeanStarlette.urlPathFor_match", "Keel.PathTemplate.match_urlFor", "Keel.PathTemplate.urlFor_match"]
+test = ["tests/Conformance.lean::routingCases", "tests/Conformance.lean::convertorCases"]
+
+[[requirement]]
+id = "routing.trailing-newline"
+upstream = "starlette/routing.py:compile_path (UP-030)"
+title = "A route matches the whole path; '/about%0A' is not '/about' (upstream's '$' matches before a final newline)"
+status = "deviation"
+realises = ["Keel.PathTemplate.match"]
+test = ["tests/Conformance.lean::transportCases"]
+
+[[requirement]]
+id = "routing.url-path-for"
+upstream = "tests/test_routing.py::test_url_path_for"
+title = "url_path_for through routes and named/unnamed mounts, NoMatchFound and to_string assertions as none"
+status = "implemented"
+realises = ["LeanStarlette.BaseRoute.urlPathFor", "LeanStarlette.urlPathForList", "LeanStarlette.Application.urlPathFor", "LeanStarlette.URLPath.makeAbsoluteURL"]
+theorem = ["LeanStarlette.compile_match_url_path_for"]
+test = ["tests/Conformance.lean::routingCases", "tests/Props.lean::properties"]
+
+[[requirement]]
+id = "routing.float-exact"
+upstream = "starlette/convertors.py:FloatConvertor (UP-029)"
+title = "float path parameters are exact decimals; to_string does not round to 20 places"
+status = "deviation"
+realises = ["Keel.Convertor.float"]
+test = ["tests/Conformance.lean::routingCases"]
+
+[[requirement]]
+id = "routing.first-match"
+upstream = "tests/test_routing.py::test_router"
+title = "The first fully matching route handles the request"
+status = "implemented"
+realises = ["LeanStarlette.Router.resolve", "LeanStarlette.routerApp", "LeanStarlette.BaseRoute.matches"]
+theorem = ["LeanStarlette.route_first_match"]
+test = ["tests/Conformance.lean::routingCases"]
+
+[[requirement]]
+id = "routing.405"
+upstream = "tests/test_routing.py::test_router_query_method"
+title = "405 iff no full match and a partial match; Allow is the union of partial routes' methods in route order (UP-027)"
+status = "deviation"
+realises = ["LeanStarlette.allowOf", "LeanStarlette.methodNotAllowed"]
+theorem = ["LeanStarlette.partial_iff_405", "LeanStarlette.mem_allowOf", "LeanStarlette.method_not_allowed_response"]
+test = ["tests/Conformance.lean::routingCases", "tests/Conformance.lean::transportCases"]
+
+[[requirement]]
+id = "routing.404-redirect-slashes"
+upstream = "tests/test_routing.py::test_router"
+title = "No match: 307 redirect_slashes when the toggled path matches, else 404"
+status = "implemented"
+realises = ["LeanStarlette.toggleSlash", "LeanStarlette.Responses.RedirectResponse"]
+theorem = ["LeanStarlette.no_match_404", "LeanStarlette.redirect_slashes_307", "LeanStarlette.redirect_307"]
+test = ["tests/Conformance.lean::routingCases"]
+
+[[requirement]]
+id = "routing.head"
+upstream = "tests/test_applications.py::test_func_route"
+title = "GET routes accept HEAD; a route allowing GET matches HEAD as GET"
+status = "implemented"
+realises = ["LeanStarlette.normaliseMethods", "LeanStarlette.BaseRoute.allows"]
+theorem = ["LeanStarlette.head_implies_get", "LeanStarlette.route_allows_head", "LeanStarlette.head_mem_normaliseMethods"]
+test = ["tests/Conformance.lean::applicationCases", "tests/Conformance.lean::transportCases"]
+
+[[requirement]]
+id = "routing.mount"
+upstream = "tests/test_routing.py::test_mount_urls"
+title = "Mount of routes or an app; prefix moved into root_path"
+status = "implemented"
+realises = ["LeanStarlette.Routing.Mount", "LeanStarlette.Request.routePath"]
+test = ["tests/Conformance.lean::routingCases"]
+
+[[requirement]]
+id = "routing.name-default"
+upstream = "starlette/routing.py:get_name"
+title = "Route name defaults to '' (Lean functions have no runtime __name__); pass name := explicitly"
+status = "deviation"
+realises = ["LeanStarlette.Routing.Route"]
+
+[[requirement]]
+id = "datastructures.headers"
+upstream = "tests/test_datastructures.py::test_headers"
+title = "Headers: case-insensitive multidict, MutableHeaders set/append/delete/setdefault/update"
+status = "implemented"
+realises = ["LeanStarlette.Headers", "LeanStarlette.Headers.get?", "LeanStarlette.Headers.set", "LeanStarlette.Headers.ofList"]
+theorem = ["LeanStarlette.headers_get_ci", "LeanStarlette.get_ci", "LeanStarlette.get?_set_self"]
+test = ["tests/Conformance.lean::datastructureCases", "tests/Props.lean::properties"]
+
+[[requirement]]
+id = "datastructures.queryparams"
+upstream = "tests/test_datastructures.py::test_queryparams"
+title = "QueryParams: parse_qsl(keep_blank_values=True), last-wins lookup, getlist, urlencode"
+status = "tested"
+realises = ["LeanStarlette.QueryParams.parse", "LeanStarlette.QueryParams.get?"]
+test = ["tests/Conformance.lean::datastructureCases", "tests/Props.lean::properties", "tests/pbt/Pbt.lean"]
+
+[[requirement]]
+id = "datastructures.url"
+upstream = "tests/test_datastructures.py::test_url"
+title = "URL split and rebuilt; include/replace/remove_query_params; URL(scope) from Host or server"
+status = "tested"
+realises = ["LeanStarlette.URL.parse", "LeanStarlette.URL.toStr", "LeanStarlette.Request.url", "LeanStarlette.parseHostHeader"]
+test = ["tests/Conformance.lean::datastructureCases", "tests/Conformance.lean::requestCases"]
+
+[[requirement]]
+id = "encoding.percent"
+upstream = "urllib.parse.unquote/quote/quote_plus as used by starlette"
+title = "Percent-decoding with UTF-8 replacement, quote with a safe set, quote_plus"
+status = "tested"
+realises = ["LeanStarlette.unquote", "LeanStarlette.quote", "LeanStarlette.quotePlus", "LeanStarlette.decodeUtf8"]
+test = ["tests/Props.lean::properties", "tests/pbt/Pbt.lean"]
+
+[[requirement]]
+id = "requests.request"
+upstream = "tests/test_requests.py::test_request_url"
+title = "Request: method, url, query_params, headers, path_params, client, body"
+status = "implemented"
+realises = ["LeanStarlette.Request", "LeanStarlette.Request.queryParams", "LeanStarlette.Request.body", "LeanStarlette.Request.urlFor"]
+test = ["tests/Conformance.lean::requestCases"]
+
+[[requirement]]
+id = "requests.json"
+upstream = "tests/test_requests.py::test_request_json"
+title = "request.json(); invalid or too-deep JSON is HTTPException 400 (upstream: 500 / RecursionError)"
+status = "deviation"
+realises = ["LeanStarlette.Request.json", "LeanStarlette.Request.json?"]
+test = ["tests/Conformance.lean::requestCases"]
+
+[[requirement]]
+id = "responses.response"
+upstream = "tests/test_responses.py::test_populate_headers"
+title = "Response, PlainTextResponse, HTMLResponse: content-length and content-type populated as init_headers"
+status = "implemented"
+realises = ["LeanStarlette.Response.make", "LeanStarlette.initHeaders", "LeanStarlette.Responses.Response", "LeanStarlette.Responses.PlainTextResponse", "LeanStarlette.Responses.HTMLResponse"]
+theorem = ["LeanStarlette.content_length_eq_body", "LeanStarlette.body_eq_content"]
+test = ["tests/Conformance.lean::responseCases", "tests/Props.lean::properties"]
+
+[[requirement]]
+id = "responses.no-body"
+upstream = "tests/test_responses.py::test_empty_204_response"
+title = "No body for 1xx/204/304 (upstream sends one, UP-028); invariant Response.h_body"
+status = "deviation"
+realises = ["LeanStarlette.Response", "LeanStarlette.allowedBody"]
+theorem = ["LeanStarlette.no_body_204_304"]
+test = ["tests/Conformance.lean::responseCases"]
+
+[[requirement]]
+id = "responses.json"
+upstream = "tests/test_responses.py::test_json_none_response"
+title = "JSONResponse: compact, ensure_ascii=False; NaN/Infinity refused (allow_nan=False) as a 500"
+status = "implemented"
+realises = ["LeanStarlette.Responses.JSONResponse", "LeanStarlette.Responses.jsonRender"]
+theorem = ["LeanStarlette.json_response_body", "LeanStarlette.json_response_nonfinite"]
+test = ["tests/Conformance.lean::responseCases"]
+
+[[requirement]]
+id = "responses.redirect"
+upstream = "tests/test_responses.py::test_quoting_redirect_response"
+title = "RedirectResponse: 307 default, location quoted with upstream's safe set"
+status = "implemented"
+realises = ["LeanStarlette.Responses.RedirectResponse"]
+theorem = ["LeanStarlette.redirect_307"]
+test = ["tests/Conformance.lean::responseCases"]
+
+[[requirement]]
+id = "exceptions.http"
+upstream = "tests/test_exceptions.py::test_not_acceptable"
+title = "HTTPException with reason-phrase detail; ExceptionMiddleware handlers by status, class, kind; 204/304 empty"
+status = "implemented"
+realises = ["LeanStarlette.HTTPException", "LeanStarlette.exceptionMiddleware", "LeanStarlette.httpExceptionResponse", "LeanStarlette.lookupHandler"]
+test = ["tests/Conformance.lean::exceptionCases", "tests/Conformance.lean::applicationCases"]
+
+[[requirement]]
+id = "exceptions.server-error"
+upstream = "tests/middleware/test_errors.py::test_handler"
+title = "ServerErrorMiddleware: 500 handler, debug text/HTML (no traceback in Lean); response returned, not re-raised"
+status = "deviation"
+realises = ["LeanStarlette.serverErrorMiddleware", "LeanStarlette.debugResponse"]
+test = ["tests/Conformance.lean::applicationCases"]
+
+[[requirement]]
+id = "applications.starlette"
+upstream = "tests/test_applications.py::test_405"
+title = "Starlette(routes, middleware, exception_handlers, debug, max_body_size): build_middleware_stack order"
+status = "implemented"
+realises = ["LeanStarlette.Routing.Starlette", "LeanStarlette.Application.app", "LeanStarlette.Application.bodyLimit"]
+test = ["tests/Conformance.lean::applicationCases"]
+
+[[requirement]]
+id = "status.valid"
+upstream = "starlette/responses.py:Response (status_code)"
+title = "Status codes are 100..599 by type (autoParam by decide); upstream accepts any int"
+status = "deviation"
+realises = ["LeanStarlette.StatusCode.Valid"]
+
+[[requirement]]
+id = "transport.std-http"
+upstream = "uvicorn (server) / ASGI scope"
+title = "Serving over Std.Http (trusted, not re-verified): request/response conversion, HEAD body dropped by the server, body limits"
+status = "tested"
+realises = ["LeanStarlette.Application.run", "LeanStarlette.Application.toHandler", "LeanStarlette.Application.exchange", "LeanStarlette.requestOfHead", "LeanStarlette.toHttpResponse"]
+test = ["tests/Conformance.lean::transportCases"]
+
+[[requirement]]
+id = "excluded.host-websocket-lifespan"
+upstream = "tests/test_routing.py::test_host_routing"
+title = "Host routes, WebSocketRoute, lifespan, class endpoints: later cards (m7)"
+status = "excluded"

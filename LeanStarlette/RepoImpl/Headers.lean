@@ -47,6 +47,10 @@ def keys (h : Headers) : List String := h.raw.map (·.1)
 def values (h : Headers) : List String := h.raw.map (·.2)
 def items (h : Headers) : List (String × String) := h.raw
 
+/-- `dict(headers)`: each name once, with its first value. -/
+def dict (h : Headers) : List (String × String) :=
+  (dedup h.keys).map fun k => (k, (h.get? k).getD "")
+
 /-- `MutableHeaders.append(key, value)`: add a field, keeping duplicates. -/
 def append (h : Headers) (key value : String) : Headers :=
   ⟨h.raw ++ [(lowerAscii key, value)], by

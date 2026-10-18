@@ -31,7 +31,7 @@ structure VerifiedRouting where
   compileMatchUrlPathFor : Spec.CompileMatchUrlPathFor
   urlPathForMatch : Spec.UrlPathForMatch
 
-def theVerifiedRouting : VerifiedRouting where
+theorem theVerifiedRouting : VerifiedRouting where
   routeFirstMatch := route_first_match
   partialIff405 := partial_iff_405
   allowUnion := mem_allowOf
@@ -50,7 +50,7 @@ structure VerifiedHttp where
   redirect307 : Spec.Redirect307
   jsonResponseBody : Spec.JsonResponseBody
 
-def theVerifiedHttp : VerifiedHttp where
+theorem theVerifiedHttp : VerifiedHttp where
   headersGetCI := headers_get_ci
   contentLengthEqBody := content_length_eq_body
   noBody204304 := no_body_204_304

@@ -56,18 +56,34 @@ def exceptionMiddleware (handlers : List (ExceptionKey × ExceptionHandler)) (ap
 /-- `ServerErrorMiddleware.error_response`. -/
 def internalServerError : Response := PlainTextResponse "Internal Server Error" (status_code := 500)
 
+/-- HTML-escape text (`html.escape`). -/
+def htmlEscape (s : String) : String :=
+  String.ofList (s.toList.flatMap fun
+    | '&' => "&amp;".toList | '<' => "&lt;".toList | '>' => "&gt;".toList
+    | '"' => "&quot;".toList | '\'' => "&#x27;".toList | c => [c])
+
+/-- `ServerErrorMiddleware.debug_response`: the error as HTML when the client
+accepts it, else as plain text. Lean has no traceback to show, so the page
+names the exception and its message. An `IO` error is reported as
+`RuntimeError`, its closest Python counterpart. -/
+def debugResponse (req : Request) (e : Exception) : Response :=
+  let accept := (req.headers.get? "accept").getD ""
+  if (accept.splitOn "text/html").length > 1 then
+    HTMLResponse s!"<html><head><title>Starlette Debugger</title></head><body><h1>500 Server Error</h1><h2>{htmlEscape (toString e)}</h2></body></html>" (status_code := 500)
+  else PlainTextResponse (toString e) (status_code := 500)
+
 /-- `ServerErrorMiddleware(app, handler, debug)`. Upstream re-raises after
 responding so the server logs it; here the response is returned and the
 transport logs the error. -/
 def serverErrorMiddleware (handler : Option ExceptionHandler) (debug : Bool) (app : App) : App := fun req => do
   let respond (e : Exception) : AppM Response :=
-    if debug then pure (PlainTextResponse (toString e) (status_code := 500))
+    if debug then pure (debugResponse req e)
     else match handler with
       | some h => tryCatch (h req e) fun _ => pure internalServerError
       | none => pure internalServerError
   tryCatchThe IO.Error
     (tryCatch (app req) respond)
-    (fun e => respond (.custom "IOError" (toString e) .null))
+    (fun e => respond (.custom "RuntimeError" (toString e) .null))
 
 /-- An application: `Starlette(...)`'s state. Build one with `Starlette`. -/
 structure Application where
@@ -86,10 +102,13 @@ def urlPathFor (a : Application) (name : String) (params : List (String × Strin
   urlPathForList a.routes name params
 abbrev url_path_for := @urlPathFor
 
-/-- `RequestBodyLimitMiddleware`. -/
+/-- `RequestBodyLimitMiddleware`: a body over the limit is a
+`413 Content Too Large`. -/
 def bodyLimit (limit : Option Nat) (app : App) : App := fun req =>
   match limit with
-  | some n => if req.bodyBytes.size > n then throw (HTTPException 413) else app req
+  | some n =>
+    if req.bodyBytes.size > n then pure (PlainTextResponse "Content Too Large" (status_code := 413))
+    else app req
   | none => app req
 
 /-- `build_middleware_stack()`, with `request.url_for` wired to the routes. -/
