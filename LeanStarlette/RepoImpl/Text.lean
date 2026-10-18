@@ -34,13 +34,6 @@ def digitChar (d : Nat) : Char := Char.ofNat (48 + d)
 /-- The value of a digit character. -/
 def digitVal (c : Char) : Nat := c.toNat - 48
 
-/-- Decimal digits of `n`, most significant first, without leading zeros
-(Python's `str(n)` for `n ≥ 0`). -/
-def natDigits (n : Nat) : List Char :=
-  if n < 10 then [digitChar n] else natDigits (n / 10) ++ [digitChar (n % 10)]
-termination_by n
-decreasing_by omega
-
 /-- The number a string of decimal digits denotes (Python's `int(s)` on
 `[0-9]+`). Leading zeros are allowed. -/
 def ofDigits (s : List Char) : Nat := s.foldl (fun a c => a * 10 + digitVal c) 0

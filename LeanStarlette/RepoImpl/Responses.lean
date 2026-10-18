@@ -82,15 +82,24 @@ def HTMLResponse (content : Content := {}) (status_code : Nat := 200)
 
 /-- The bytes `JSONResponse` sends for a value: `json.dumps(content,
 ensure_ascii=False, allow_nan=False, indent=None, separators=(",", ":"))`.
-lean-json's printer is compact and non-ASCII-preserving by default, and its
-`Json` has no NaN or infinity to print. -/
+lean-json's printer is compact and keeps non-ASCII text by default. -/
 def jsonBody (j : LeanJson.Json) : ByteArray := (LeanJson.print j).val
 
-/-- `JSONResponse(content, ...)`: `application/json`. -/
+/-- `JSONResponse.render`: the body, or the `ValueError` `json.dumps` raises
+under `allow_nan=False` for NaN or an infinity. -/
+def jsonRender (j : LeanJson.Json) : Except String ByteArray :=
+  if j.allFinite then .ok (jsonBody j) else .error "Out of range float values are not JSON compliant"
+
+/-- `JSONResponse(content, ...)`: `application/json`. A value with NaN or an
+infinity cannot be rendered (upstream raises `ValueError` in the endpoint,
+which `ServerErrorMiddleware` turns into a 500), so the response is that
+`500 Internal Server Error`. -/
 def JSONResponse {α : Type} [LeanJson.IntoJson α] (content : α) (status_code : Nat := 200)
     (headers : List (String × String) := []) (media_type : String := "application/json")
     (h : StatusCode.Valid status_code := by decide) : LeanStarlette.Response :=
-  .make (jsonBody (LeanJson.intoJson content)) status_code headers (some media_type) h
+  match jsonRender (LeanJson.intoJson content) with
+  | .ok body => .make body status_code headers (some media_type) h
+  | .error _ => .make "Internal Server Error" 500 [] (some "text/plain") (by decide)
 
 /-- The characters `RedirectResponse` leaves unquoted in `location`. -/
 def redirectSafe : List Char := ":/%#?=@[]!$&'()*+,;".toList

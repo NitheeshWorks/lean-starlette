@@ -55,7 +55,7 @@
    "type": "git",
    "subDir": null,
    "scope": "",
-   "rev": "204c13b7efcede95b87df7eeefa6108681a4dc67",
+   "rev": "87643022d7a69633099da16f7f65b71c20395450",
    "name": "LeanJson",
    "manifestFile": "lake-manifest.json",
    "inputRev": "main",

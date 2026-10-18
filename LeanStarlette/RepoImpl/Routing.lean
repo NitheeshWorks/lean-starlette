@@ -87,6 +87,13 @@ def methodsOf : BaseRoute → List String
   | .route _ r _ _ _ => r.methods.getD []
   | .mount .. => []
 
+/-- Whether a route accepts a method (a mount, or a route without methods,
+accepts all). -/
+def allows (r : BaseRoute) (m : String) : Bool :=
+  match r with
+  | .route _ rt _ _ _ => rt.allows m
+  | .mount .. => true
+
 /-- `name` of a route (a mount's may be absent). -/
 def nameOf : BaseRoute → Option String
   | .route _ _ n _ _ => some n
