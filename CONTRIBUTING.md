@@ -87,6 +87,14 @@ Listed here with the reason, and in `docs/traceability.toml` with
   acts on (ranges, ETags, 304, the path under the static root) are pure, in
   `Range.lean`, `Files.lean` and `HttpDate.lean`.
 
+* **File I/O** (`RepoImpl/FileIO.lean`): reading in 64 KiB chunks, ranges
+  and multipart bodies, `stat`, and the symbolic-link check (`realPath` of
+  the file under the directory's, unless `follow_symlink`) are tested, not
+  proved: golden replay from Starlette 1.8.0
+  (`tests/golden/files-starlette-1.8.0.jsonl`, 32 requests) and constant
+  memory measured with `bench file` (20 MB and 400 MB files both peak near
+  86 MB resident).
+
 ### Deviations from upstream
 
 Each has a `status = "deviation"` row in `docs/traceability.toml`.
@@ -114,6 +122,14 @@ Each has a `status = "deviation"` row in `docs/traceability.toml`.
   no traceback). An `IO` error is reported as `RuntimeError`.
 * **Methods** keep their given order with `HEAD` appended after `GET`;
   upstream stores a set.
+* **ETag** of a file is `"<mtime ns hex>-<size hex>"`; upstream hashes
+  `f"{mtime}-{size}"` with MD5. The value is opaque to clients (RFC 9110
+  8.8.3) and still changes with the file; Lean core has no MD5.
+* **`StaticFiles(check_dir=True)`** checks the directory on every request
+  (upstream at construction): a missing directory is a 500 either way.
+* **Background tasks** are `IO` actions (`BackgroundTask(func, *args)` is the
+  closure); their order is proved for `runAll` in every lawful monad, since
+  core Lean has no `LawfulMonad IO` instance, and `run` is `runAll` at `IO`.
 * **Transport limits.** `Application.run` and `Application.exchange`
   default to uvicorn's effective limits (measured against uvicorn 0.54 with
   Starlette 1.8.0 on the same raw requests): any number of query parameters,

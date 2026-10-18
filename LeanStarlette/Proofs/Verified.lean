@@ -1,6 +1,9 @@
 import LeanStarlette.Specifications.Starlette
 import LeanStarlette.Proofs.Routing
 import LeanStarlette.Proofs.Http
+import LeanStarlette.Proofs.Background
+import LeanStarlette.Proofs.Range
+import LeanStarlette.Proofs.Files
 
 /-!
 # The harness: one `Verified<Layer>` structure per layer
@@ -56,5 +59,20 @@ theorem theVerifiedHttp : VerifiedHttp where
   noBody204304 := no_body_204_304
   redirect307 := redirect_307
   jsonResponseBody := json_response_body
+
+/-- Streaming, background tasks, files and static files (m6). -/
+structure VerifiedFiles where
+  backgroundRunOrder : Spec.BackgroundRunOrder
+  rangeParsePrint : Spec.RangeParsePrint
+  rangeWithin : Spec.RangeWithin
+  etag304Iff : Spec.Etag304Iff
+  servedPathInside : Spec.ServedPathInside
+
+theorem theVerifiedFiles : VerifiedFiles where
+  backgroundRunOrder := BackgroundTasks.background_run_order
+  rangeParsePrint := range_parse_print
+  rangeWithin := range_within
+  etag304Iff := etag_304_iff
+  servedPathInside := served_path_inside
 
 end LeanStarlette

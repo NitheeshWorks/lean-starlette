@@ -29,6 +29,10 @@ namespace LeanStarlette
 /-- At most this many ranges are honoured (`FileResponse.max_ranges`). -/
 def maxRanges : Nat := 100
 
+/-- Offsets the digit bound allows: CPython's `int()` reads up to 4300
+digits, so offsets below `10 ^ 4300`. -/
+def maxPrintable : Nat := 10 ^ maxIntDigits
+
 /-- `int(s)` for `s` already stripped, including its digit limit: more than
 `maxIntDigits` digits is upstream's `ValueError`, so `none`. Linear in `s`. -/
 def pyInt? (s : List Char) : Option Int :=

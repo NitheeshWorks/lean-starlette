@@ -734,6 +734,98 @@ def goldenCases : IO (List Case) := do
   let lines ← IO.FS.lines "tests/golden/starlette-1.8.0.jsonl"
   return lines.toList.filterMap fun l => (from_json l).toOption.bind fun j => goldenCase j.val
 
+/-! ## Files, static files, streaming, background tasks: golden from Starlette 1.8.0
+
+`tests/golden/record_files.py` records `tests/golden/files-starlette-1.8.0.jsonl`
+over the fixture below (every mtime 1700000000). The ETag value is not compared
+(see CONTRIBUTING.md); a multipart boundary is compared as `*`. -/
+
+def filesFixture : List (String × String) := [
+  ("static/example.txt", "0123456789abcdefghij"),
+  ("static/index.html", "<h1>Index</h1>"),
+  ("static/sub/index.html", "<h1>Sub</h1>"),
+  ("static/404.html", "<h1>Custom 404</h1>"),
+  ("secret.txt", "secret")]
+
+/-- Write the fixture under a fresh temporary directory; returns its path. -/
+def makeFixture : IO String := do
+  let root ← IO.FS.createTempDir
+  for (rel, text) in filesFixture do
+    let p := root / rel
+    if let some d := p.parent then IO.FS.createDirAll d
+    IO.FS.writeFile p text
+    let _ ← IO.Process.output { cmd := "touch", args := #["-d", "@1700000000", p.toString] }
+  return root.toString
+
+/-- The app `tests/golden/record_files.py` records, in Lean. -/
+def filesApp (root : String) (log : IO.Ref (List Nat)) : Application :=
+  let static := root ++ "/static"
+  Starlette (routes := [
+    Mount "/static" (app := StaticFiles static),
+    Mount "/site" (app := StaticFiles static (html := true)),
+    Route "/file" (fun (_ : Request) => FileResponse (static ++ "/example.txt")),
+    Route "/stream" (fun (_ : Request) =>
+      StreamingResponse (ContentStream.ofStrings ["a", "bb", "ccc"]) (media_type := some "text/plain")),
+    Route "/bg" (fun (_ : Request) => do
+      log.set []
+      let tasks := [1, 2, 3].foldl (fun (t : BackgroundTasks) (i : Nat) => t.add_task (log.modify (· ++ [i])))
+        (BackgroundTasks.new)
+      return PlainTextResponse "ok" (background := tasks) : Request → AppM Response),
+    Route "/bglog" (fun (_ : Request) => do
+      return PlainTextResponse (",".intercalate ((← log.get).map toString)) : Request → AppM Response)])
+
+def normHeader (k v : String) : String :=
+  if k == "content-type" && v.startsWith "multipart/byteranges; boundary=" then
+    "multipart/byteranges; boundary=*"
+  else v
+
+def filesKeep : List String :=
+  ["content-type", "content-length", "content-range", "accept-ranges", "last-modified", "location", "allow"]
+
+def filesGoldenCase (app : Application) (line : Json) : Option Case := do
+  let method ← (line.getObjVal? "method").bind Json.getStr?
+  let url ← (line.getObjVal? "url").bind Json.getStr?
+  let strPairs (j : Option Json) : List (String × String) := match j with
+    | some (.obj kvs) => kvs.toList.filterMap fun (p : String × Json) => p.2.getStr?.map (p.1, ·)
+    | _ => []
+  let hin := strPairs (line.getObjVal? "headers_in")
+  let status ← (line.getObjVal? "status").bind Json.getInt?
+  let headers := strPairs (line.getObjVal? "headers")
+  let content := (line.getObjVal? "content").bind Json.getStr?
+  pure ⟨"tests/golden/files-starlette-1.8.0.jsonl",
+    s!"golden {method} {url}{if hin.isEmpty then "" else s!" {hin.map (·.1)}"}", do
+    let r ← TestClient.request app method url hin (follow := false)
+    let hs := headers.all fun (k, v) => (r.headers.get? k).map (normHeader k) == some v
+    let extra := filesKeep.all fun k => headers.any (·.1 == k) || !r.headers.contains k
+    let body := content.all (r.text == ·)
+    let good := r.status_code == status.toNat && hs && extra && body
+    unless good do
+      IO.println s!"      got {r.status_code} {repr r.headers} {r.text.quote}"
+    ok good⟩
+
+def filesGoldenCases : IO (List Case) := do
+  let root ← makeFixture
+  let log ← IO.mkRef ([] : List Nat)
+  let app := filesApp root log
+  let lines ← IO.FS.lines "tests/golden/files-starlette-1.8.0.jsonl"
+  return lines.toList.filterMap fun l => (from_json l).toOption.bind fun j => filesGoldenCase app j.val
+
+def filesBehaviourCases (root : String) : List Case := [
+  ⟨"tests/test_staticfiles.py::test_staticfiles_304_with_etag_match", "the file's own ETag is 304, weak or strong", do
+    let app := Starlette (routes := [Mount "/static" (app := StaticFiles (root ++ "/static"))])
+    let r ← TestClient.get app "/static/example.txt"
+    let some etag := r.headers.get? "etag" | ok false
+    let r2 ← TestClient.get app "/static/example.txt" (headers := [("if-none-match", etag)])
+    let r3 ← TestClient.get app "/static/example.txt" (headers := [("if-none-match", s!"\"x\", W/{etag}")])
+    ok (r.status_code == 200 && r2.status_code == 304 && r3.status_code == 304 && r2.text == "" &&
+      r2.headers.get? "etag" == some etag && !r2.headers.contains "content-length")⟩,
+  ⟨"tests/test_background.py::test_multi_tasks_failure_avoids_next_execution", "a failing task skips the rest", do
+    let log ← IO.mkRef ([] : List Nat)
+    let tasks := BackgroundTasks.new [log.modify (· ++ [1]), throw (IO.userError "boom"), log.modify (· ++ [3])]
+    let r ← try tasks.run; pure true catch _ => pure false
+    ok (!r && (← log.get) == [1])⟩
+]
+
 /-! ## Numbers from request input: Python's `int()` digit limit, linear time
 
 Expected values measured on Starlette 1.8.0 / CPython 3.13
@@ -785,9 +877,11 @@ def cases : List Case :=
 def main : IO UInt32 := do
   let mut failures := 0
   let golden ← goldenCases
+  let filesGolden ← filesGoldenCases
+  let filesBehaviour := filesBehaviourCases (← makeFixture)
   let _ ← IO.asTask (socketApp.run (port := socketPort)) .dedicated
   IO.sleep 1500
-  let cases := cases ++ golden ++ socketCases
+  let cases := cases ++ golden ++ filesGolden ++ filesBehaviour ++ socketCases
   for c in cases do
     let ok ← try c.run catch e => do IO.println s!"      {e}"; pure false
     IO.println s!"{if ok then "ok  " else "FAIL"}  {c.name}  [{c.upstream}]"

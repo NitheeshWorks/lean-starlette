@@ -83,7 +83,25 @@ def paths : IO Unit := do
         let r ← splitApp.call { path := path }
         pure s!"{r.status_code}"
 
+/-- Serve a file of `mb` megabytes over TCP and download it with curl: peak
+memory should not grow with the file (it is sent in 64 KiB chunks). -/
+def fileBench (mb : Nat) : IO Unit := do
+  let dir ← IO.FS.createTempDir
+  let path := dir / "big.bin"
+  IO.FS.withFile path .write fun h => do
+    let chunk := ByteArray.mk (Array.replicate (1024 * 1024) 120)
+    for _ in [0:mb] do h.write chunk
+  let app := Starlette (routes := [Route "/big" (fun (_ : Request) => FileResponse path.toString)])
+  let _ ← IO.asTask (app.run (port := 18741)) .dedicated
+  IO.sleep 500
+  let t0 ← IO.monoMsNow
+  let out ← IO.Process.output { cmd := "curl", args := #["-s", "-o", "/dev/null", "-w", "%{http_code} %{size_download}", "http://127.0.0.1:18741/big"] }
+  IO.println s!"file {mb} MB over TCP: {out.stdout} in {(← IO.monoMsNow) - t0} ms"
+  IO.FS.removeDirAll dir
+  IO.Process.exit 0
+
 def main (args : List String) : IO Unit := do
+  if args.headD "" == "file" then fileBench ((args.getD 1 "100").toNat!)
   if args.headD "" == "paths" then paths; return
   if args.headD "" == "digits" then digits; return
   let shape := args.headD "array"

@@ -96,4 +96,35 @@ def UrlPathForMatch : Prop :=
   ∀ (t : PathTemplate) {path : String} {v : Args t.pieces},
     t.match path = some v → t.Canonical path → t.urlFor v = path
 
+/-- Background tasks run in the order they were added (in every lawful monad;
+`BackgroundTasks.run` is `runAll` at `IO`). -/
+def BackgroundRunOrder : Prop :=
+  ∀ {m : Type → Type} [Monad m] [LawfulMonad m] (ts : List (m PUnit)) (t : m PUnit),
+    BackgroundTasks.runAll (ts ++ [t]) = (do BackgroundTasks.runAll ts; t)
+
+/-- A printed `Range` header parses back to its byte ranges. -/
+def RangeParsePrint : Prop :=
+  ∀ (size : Nat) (rs : ByteRanges size), size ≤ maxPrintable →
+    ∃ rs', parseRangeHeader (printRanges rs.ranges) size = .ranges rs' ∧ rs'.ranges = rs.ranges
+
+/-- Every parsed byte range lies inside the file. -/
+def RangeWithin : Prop :=
+  ∀ (h : String) (size : Nat) (rs : ByteRanges size), parseRangeHeader h size = .ranges rs →
+    ∀ r ∈ rs.ranges, r.1 < r.2 ∧ r.2 ≤ size
+
+/-- With a non-empty `If-None-Match`, a static file is 304 iff it lists the
+file's ETag or is `*`. -/
+def Etag304Iff : Prop :=
+  ∀ (path : String) (size : Nat) (mtimeNs : Int) (req : Headers) (inm : String),
+    req.get? "if-none-match" = some inm → inm ≠ "" →
+    ((staticFileResponse path size mtimeNs req).status_code = 304 ↔
+      (String.ofList (stripWs inm.toList) = "*" ∨ fileETag size mtimeNs ∈ ifNoneMatchTags inm))
+
+/-- A served static path is the directory followed by plain entry names. -/
+def ServedPathInside : Prop :=
+  ∀ (dir p : String) (segs : List String), staticSegments p = some segs →
+    joinUnder dir segs = dir ++ String.join (segs.map ("/" ++ ·)) ∧
+      ∀ s ∈ segs, s.isEmpty = false ∧ s ≠ "." ∧ s ≠ ".." ∧
+        s.contains '/' = false ∧ s.contains '\\' = false ∧ s.contains '\x00' = false
+
 end LeanStarlette.Spec

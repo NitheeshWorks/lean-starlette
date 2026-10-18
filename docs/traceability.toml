@@ -285,6 +285,74 @@ theorem = ["LeanStarlette.digitsValueChunked_eq"]
 test = ["tests/Conformance.lean::numericCases", "tests/Bench.lean"]
 
 [[requirement]]
+id = "background.order"
+upstream = "tests/test_background.py::test_multiple_tasks"
+title = "BackgroundTasks run in order after the response; a failing task skips the rest"
+status = "implemented"
+realises = ["LeanStarlette.BackgroundTasks.run", "LeanStarlette.BackgroundTasks.runAll", "LeanStarlette.BackgroundTasks.addTask", "LeanStarlette.BackgroundTask"]
+theorem = ["LeanStarlette.BackgroundTasks.background_run_order", "LeanStarlette.BackgroundTasks.run_order_trace", "LeanStarlette.BackgroundTasks.runAll_cons"]
+test = ["tests/Conformance.lean::filesBehaviourCases", "tests/golden/files-starlette-1.8.0.jsonl"]
+
+[[requirement]]
+id = "responses.streaming"
+upstream = "tests/test_responses.py::test_streaming_response"
+title = "StreamingResponse: chunks sent as produced, chunked when no content-length"
+status = "tested"
+realises = ["LeanStarlette.Responses.StreamingResponse", "LeanStarlette.ContentStream.ofStrings", "LeanStarlette.toHttpBody"]
+test = ["tests/golden/files-starlette-1.8.0.jsonl"]
+
+[[requirement]]
+id = "responses.file-range"
+upstream = "tests/test_responses.py::test_file_response_range"
+title = "FileResponse with Range (single, suffix, open-ended, merged, multipart), If-Range, 416 and 400; ranges parse back from print and lie inside the file"
+status = "implemented"
+realises = ["LeanStarlette.parseRangeHeader", "LeanStarlette.checkRanges", "LeanStarlette.printRanges", "LeanStarlette.filePlan", "LeanStarlette.Responses.FileResponse"]
+theorem = ["LeanStarlette.range_parse_print", "LeanStarlette.range_within", "LeanStarlette.parseRangePart_print", "LeanStarlette.splitAll_intercalate"]
+test = ["tests/golden/files-starlette-1.8.0.jsonl", "tests/Conformance.lean::numericCases"]
+
+[[requirement]]
+id = "staticfiles.304"
+upstream = "tests/test_staticfiles.py::test_staticfiles_304_with_etag_match"
+title = "StaticFiles 304: If-None-Match (ETag, weak, *) wins over If-Modified-Since; 304 carries only the cache headers"
+status = "implemented"
+realises = ["LeanStarlette.isNotModified", "LeanStarlette.staticFileResponse", "LeanStarlette.notModifiedResponse"]
+theorem = ["LeanStarlette.etag_304_iff", "LeanStarlette.date_304_iff", "LeanStarlette.static_304_iff"]
+test = ["tests/Conformance.lean::filesBehaviourCases", "tests/golden/files-starlette-1.8.0.jsonl"]
+
+[[requirement]]
+id = "staticfiles.etag"
+upstream = "starlette/responses.py:FileResponse.set_stat_headers"
+title = "ETag value: opaque mtime-size pair instead of upstream's MD5 of it"
+status = "deviation"
+realises = ["LeanStarlette.fileETag"]
+test = ["tests/Conformance.lean::filesBehaviourCases"]
+
+[[requirement]]
+id = "staticfiles.paths"
+upstream = "tests/test_staticfiles.py::test_staticfiles_prevents_breaking_out_of_directory"
+title = "A served path stays inside the directory: segments are plain names, climbing above the root is a 404; symbolic links checked with realPath unless follow_symlink"
+status = "implemented"
+realises = ["LeanStarlette.staticSegments", "LeanStarlette.joinUnder", "LeanStarlette.lookupStatic", "LeanStarlette.isUnder"]
+theorem = ["LeanStarlette.served_path_inside", "LeanStarlette.staticSegments_normal"]
+test = ["tests/golden/files-starlette-1.8.0.jsonl"]
+
+[[requirement]]
+id = "staticfiles.html"
+upstream = "tests/test_staticfiles.py::test_staticfiles_html_normal"
+title = "StaticFiles(html=True): index.html for directories, redirect to the trailing slash, 404.html"
+status = "tested"
+realises = ["LeanStarlette.StaticFiles"]
+test = ["tests/golden/files-starlette-1.8.0.jsonl"]
+
+[[requirement]]
+id = "files.constant-memory"
+upstream = "starlette/responses.py:FileResponse (chunk_size = 64 KiB)"
+title = "Files are sent in 64 KiB chunks: peak memory does not grow with the file (20 MB and 400 MB both ~86 MB resident)"
+status = "tested"
+realises = ["LeanStarlette.sendFileRange", "LeanStarlette.fileChunkSize"]
+test = ["tests/Bench.lean"]
+
+[[requirement]]
 id = "excluded.host-websocket-lifespan"
 upstream = "tests/test_routing.py::test_host_routing"
 title = "Host routes, WebSocketRoute, lifespan, class endpoints: later cards (m7)"

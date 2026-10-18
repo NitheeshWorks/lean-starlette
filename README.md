@@ -82,6 +82,10 @@ instantiated for Starlette's `Route`, `Mount` and `Router`:
 | `content-length` is the size of the body sent | `content_length_eq_body` |
 | 1xx, 204 and 304 responses have no body | `no_body_204_304` (and the field `Response.h_body`) |
 | `JSONResponse`'s body parses back to the value; NaN is refused | `json_response_body`, `json_response_nonfinite` |
+| Background tasks run in the order they were added | `background_run_order : runAll (ts ++ [t]) = (do runAll ts; t)` in every lawful monad, `run_order_trace` |
+| A printed `Range` header parses back to its ranges; every parsed range lies inside the file | `range_parse_print`, `range_within` |
+| A static file is 304 exactly when `If-None-Match` lists its ETag (or `*`), else when `If-Modified-Since` is no earlier than `Last-Modified` | `etag_304_iff`, `date_304_iff`, `static_304_iff` |
+| A served static path is the directory followed by plain entry names (no `..`, `.`, `/`, `\`, NUL) | `served_path_inside` |
 
 Every one has a slot in `LeanStarlette/Proofs/Verified.lean`. What is
 tested rather than proved, and every deviation from upstream, is listed in
@@ -111,11 +115,14 @@ Toolchain: `leanprover/lean4:v4.35.0` (pinned in `lean-toolchain`; `elan` instal
 
 ## Status
 
-Milestone 1: routing (`Route`, `Mount`, `Router`, convertors), `Request`,
-`Response` and its four subclasses, `HTTPException`, the exception and
-server-error middleware, and the `Std.Http` transport. Middleware, cookies,
-forms, streaming, files, WebSockets, `Host`, lifespan and the httpx-based
-`TestClient` follow in later milestones.
+Milestone 1: routing (`Route`, `RouteExact`, `Mount`, `Router`,
+convertors), `Request`, `Response` and its four subclasses, `HTTPException`,
+the exception and server-error middleware, and the `Std.Http` transport.
+Milestone 6: `StreamingResponse`, `BackgroundTasks`, `FileResponse` with
+`Range`/`If-Range`/ETag, `StaticFiles` with `html` mode and 304 (files are
+sent in 64 KiB chunks: a 400 MB file peaks at 86 MB resident, as a 20 MB one
+does). Middleware, cookies, forms, WebSockets, `Host`, lifespan and the
+httpx-based `TestClient` follow in later milestones.
 
 ## License
 
