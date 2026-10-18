@@ -336,7 +336,116 @@ def gzParts : IO Unit := do
     IO.println s!"  inserts {c.head.size} {(t6 - t5) / 1000} us; best x64K on full chains {acc} {(t7 - t6) / 1000} us"
     IO.println s!"{name}: crc {crc} {(t1 - t0) / 1000} us (all); first 64K: tokenize {toks.size} {(t2 - t1) / 1000} us, bits {bits} {(t3 - t2) / 1000} us, put {w.out.size} {(t4 - t3) / 1000} us"
 
+/-! ## m5: hostile inputs to cookies, CORS and GZip, against twice Starlette
+
+`tests/golden/m5-bench-starlette-1.8.0.json` holds Starlette 1.8.0's warm
+best-of-5 times on the same inputs (`tests/golden/record_m5_bench.py`
+builds them from the same recipes); each case here is the best of 5 after a
+first run, and fails above twice upstream. -/
+
+def m5Golden : IO Json := do
+  let t ← IO.FS.readBinFile "tests/golden/m5-bench-starlette-1.8.0.json"
+  match LeanJson.from_json t with
+  | .ok j => pure j.val
+  | .error _ => throw (IO.userError "m5 golden: bad JSON")
+
+/-- A golden time in microseconds. -/
+def goldenUs (j : Json) : Nat :=
+  let t := String.fromUTF8! (LeanJson.to_json j).val
+  match t.splitOn "." with
+  | [i] => i.toNat! * 1000
+  | i :: f :: _ => i.toNat! * 1000 + ((f ++ "000").toList.take 3).foldl (fun a c => a * 10 + (c.toNat - 48)) 0
+  | [] => 0
+
+/-- Best of 5 after a first run, in microseconds, and the last result. -/
+def bestOf5 {α : Type} (act : Unit → IO α) : IO (Nat × α) := do
+  let mut r ← act ()
+  let mut best := 1000000000000
+  for _ in [0:5] do
+    let t0 ← IO.monoNanosNow
+    r ← act ()
+    let t1 ← IO.monoNanosNow
+    best := min best ((t1 - t0) / 1000)
+  return (best, r)
+
+def cookieInputs : List (String × String) := [
+  ("distinct70k", "; ".intercalate ((List.range 70000).map fun i => s!"k{i}=v{i}")),
+  ("dup100k", "; ".intercalate (List.replicate 100000 "a=1")),
+  ("quoted50k", "; ".intercalate ((List.range 50000).map fun i => s!"k{i}=\"v\\073{i}\""))]
+
+def benchOrigins : List String := (List.range 10000).map fun i => s!"https://o{i}.example.com"
+
+def corsBenchApp : Application := Starlette (routes := [Route "/" (fun (_ : Request) => PlainTextResponse "x")])
+  (middleware := [Middleware CORSMiddleware (allow_origins := benchOrigins) (allow_methods := ["GET"])
+    (allow_headers := ["X-A"])])
+
+def corsInputs : List (String × Request) := [
+  ("preflightMiss", { method := "OPTIONS", headers := Headers.ofList [("host", "example.org"),
+      ("origin", "https://evil.example.net"), ("access-control-request-method", "GET")] }),
+  ("simpleLast", { headers := Headers.ofList [("host", "example.org"), ("origin", "https://o9999.example.com")] })]
+
+def gzipInputs : List (String × ByteArray) :=
+  [("text10m", gzText 10000000), ("zeros20m", ByteArray.mk (Array.replicate 20000000 0)), ("rand2m", gzRand 2000000)]
+
+/-- Report one case against twice upstream; `true` when it holds. -/
+def m5Check (group name : String) (us upUs : Nat) (detail : String) (ok : Bool) : IO Bool := do
+  let held := ok && us ≤ 2 * upUs
+  IO.println s!"RESULT {group}/{name}: {us / 1000}.{toString (us % 1000 + 1000) |>.drop 1} ms (upstream {upUs / 1000}.{toString (upUs % 1000 + 1000) |>.drop 1} ms, bound {2 * upUs / 1000} ms) {detail}{if held then "" else "  FAIL"}"
+  (← IO.getStdout).flush
+  return held
+
+def m5Bench (only : String) : IO UInt32 := do
+  let g ← m5Golden
+  let up (group name : String) : Option Json := (g.getObjVal? group).bind (·.getObjVal? name)
+  let mut ok := true
+  if only == "" || only == "cookie" then
+    for (name, s) in cookieInputs do
+      let some e := up "cookie" name | IO.println s!"no golden for cookie/{name}"; return 2
+      let want := ((e.getObjVal? "names").bind Json.getInt?).getD (-1)
+      let (us, n) ← bestOf5 fun _ => pure (cookieParser s).length
+      ok := (← m5Check "cookie" name us (goldenUs ((e.getObjVal? "upstream_warm_ms").getD .null))
+        s!"{n} names" (n == want.toNat)) && ok
+  if only == "" || only == "cors" then
+    for (name, req) in corsInputs do
+      let some e := up "cors" name | IO.println s!"no golden for cors/{name}"; return 2
+      let want := ((e.getObjVal? "status").bind Json.getInt?).getD (-1)
+      let (us, st) ← bestOf5 fun _ => do
+        let mut st := 0
+        for _ in [0:1000] do st := (← corsBenchApp.call req).status_code
+        pure st
+      ok := (← m5Check "cors" name us (goldenUs ((e.getObjVal? "upstream_warm_ms").getD .null))
+        s!"1000 requests, status {st}" (st == want.toNat)) && ok
+  if only == "" || only == "gzip" then
+    let port : Nat := 18761
+    let app := Starlette (routes := gzipInputs.map fun (n, b) =>
+        Route s!"/{n}" (fun (_ : Request) => Response b (media_type := some "text/plain")))
+      (middleware := [Middleware GZipMiddleware (minimum_size := 500) (compresslevel := 9)])
+    let _ ← IO.asTask (app.run (port := port)) .dedicated
+    IO.sleep 300
+    for (name, body) in gzipInputs do
+      let some e := up "gzip" name | IO.println s!"no golden for gzip/{name}"; return 2
+      let dir ← IO.FS.createTempDir
+      let path := dir / "body.gz"
+      let (us, out) ← bestOf5 fun _ => IO.Process.output { cmd := "curl", args := #["-s", "-H", "Accept-Encoding: gzip",
+        "-o", path.toString, "-w", "%{http_code} %{size_download}", s!"http://127.0.0.1:{port}/{name}"] }
+      let z ← IO.FS.readBinFile path
+      IO.FS.removeDirAll dir
+      let back := match LeanHttpx.Decoders.gunzip z with | .ok b => b == body | .error _ => false
+      ok := (← m5Check "gzip" name us (goldenUs ((e.getObjVal? "upstream_warm_ms").getD .null))
+        s!"{out.stdout} (upstream {((e.getObjVal? "compressed").bind Json.getInt?).getD 0} bytes), gunzip {back}, peak {(← peakKB) / 1024} MB"
+        (out.stdout.startsWith "200" && back)) && ok
+  return if ok then 0 else 1
+
+/-- The whole compressor and its CRC on the m5 inputs. -/
+def gzFull : IO Unit := do
+  for (name, src) in gzipInputs do
+    let (crcUs, crc) ← bestOf5 fun _ => pure (LeanStarlette.Deflate.crc32Update 0 src)
+    let (us, z) ← bestOf5 fun _ => pure (LeanStarlette.Deflate.gzip src)
+    IO.println s!"{name}: gzip {src.size} -> {z.size} in {us / 1000} ms; crc {crc} in {crcUs / 1000} ms"
+
 def main (args : List String) : IO Unit := do
+  if args.headD "" == "gzfull" then gzFull; return
+  if args.headD "" == "m5bench" then IO.Process.exit (← m5Bench (args.getD 1 "")).toUInt8
   if args.headD "" == "plainupload" then plainUpload ((args.getD 1 "20").toNat!)
   if args.headD "" == "formmem" then IO.Process.exit (← formMem (args.getD 1 "")).toUInt8
   if args.headD "" == "formparse" then formParse; return

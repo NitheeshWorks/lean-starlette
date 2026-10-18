@@ -122,21 +122,49 @@ structure CookieDict where
   items : Array (String × String) := #[]
   index : Std.HashMap String Nat := {}
 
-/-- `d[k] = v`. -/
-def CookieDict.set (d : CookieDict) (k v : String) : CookieDict :=
-  match d.index[k]? with
-  | some i => { d with items := d.items.set! i (k, v) }
-  | none => { items := d.items.push (k, v), index := d.index.insert k d.items.size }
+/-- `d[k] = v`. The size is read before the push and the fields taken
+apart, so both are updated in place. -/
+def CookieDict.set : CookieDict → String → String → CookieDict
+  | ⟨items, index⟩, k, v =>
+    match index[k]? with
+    | some i => ⟨items.set! i (k, v), index⟩
+    | none =>
+      let n := items.size
+      ⟨items.push (k, v), index.insert k n⟩
+
+/-- `pyStrip`, reversing only when the piece ends in whitespace
+(`pyStripFast_eq`). -/
+def pyStripFast (s : List Char) : List Char :=
+  let t := s.dropWhile PyRe.isSpace
+  match t.getLast? with
+  | some c => if PyRe.isSpace c then (t.reverse.dropWhile PyRe.isSpace).reverse else t
+  | none => t
+
+/-- `cookieChunkKV` with `pyStripFast`. -/
+def cookieChunkKVFast (chunk : List Char) : Option (String × String) :=
+  let (k, v) := match splitFirst '=' chunk with
+    | (k, some v) => (k, v)
+    | (c, none) => ([], c)
+  let k := pyStripFast k
+  let v := pyStripFast v
+  if k.isEmpty && v.isEmpty then none else some (String.ofList k, String.ofList (cookieUnquoteChars v))
+
+/-- `splitAll` over the string's characters without building their list
+first (`splitAllStr_eq`). -/
+def splitAllStr (sep : Char) (s : String) : List (List Char) :=
+  let (cur, acc) := s.foldl (fun (st : List Char × List (List Char)) c =>
+    if c = sep then ([], st.1.reverse :: st.2) else (c :: st.1, st.2)) ([], [])
+  (cur.reverse :: acc).reverse
 
 /-- One piece into a `CookieDict`. -/
 def CookieDict.chunk (d : CookieDict) (chunk : List Char) : CookieDict :=
-  match cookieChunkKV chunk with
+  match cookieChunkKVFast chunk with
   | none => d
   | some (k, v) => d.set k v
 
 /-- **`cookie_parser(cookie_string)`**. -/
 def cookieParser (s : String) : List (String × String) :=
-  ((splitAll ';' s.toList).foldl CookieDict.chunk {}).items.toList
+  ((splitAllStr ';' s).foldl CookieDict.chunk {}).items.toList
 
 /-- `request.cookies`: the first `Cookie` header, parsed. -/
 def Request.cookies (r : Request) : List (String × String) :=

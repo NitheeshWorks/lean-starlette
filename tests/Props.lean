@@ -223,7 +223,7 @@ stretches), sometimes past one 64 KiB block. -/
 def randBytes (r : Rng) : ByteArray × Rng := Id.run do
   let (big, r) := r.nat 20
   let (n, r) := r.nat (if big == 0 then 140000 else 3000)
-  let (alpha, r) := r.nat 4
+  let (alpha, r) := r.nat 5
   let mut r := r
   let mut b := ByteArray.emptyWithCapacity n
   for _ in [0:n] do
@@ -238,7 +238,7 @@ def randBytes (r : Rng) : ByteArray × Rng := Id.run do
       let start := b.size - (back + 1)
       for i in [0:len] do b := b.push b[start + i % (back + 1)]!
     else
-      let (v, r2) := r.nat (if alpha == 0 then 256 else 4 * alpha)
+      let (v, r2) := r.nat (if alpha == 0 then 256 else if alpha == 4 then 1 else 4 * alpha)
       r := r2
       b := b.push v.toUInt8
   return (b.extract 0 n, r)

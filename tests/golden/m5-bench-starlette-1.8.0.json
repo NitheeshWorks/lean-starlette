@@ -1,0 +1,54 @@
+{
+ "starlette": "1.8.0",
+ "uvicorn": "0.54.0",
+ "python": "3.13.9",
+ "cookie": {
+  "distinct70k": {
+   "bytes": 1027778,
+   "names": 70000,
+   "upstream_warm_ms": 40.814
+  },
+  "dup100k": {
+   "bytes": 499998,
+   "names": 1,
+   "upstream_warm_ms": 30.264
+  },
+  "quoted50k": {
+   "bytes": 1027778,
+   "names": 50000,
+   "upstream_warm_ms": 77.428
+  }
+ },
+ "cors": {
+  "preflightMiss": {
+   "requests": 1000,
+   "status": 400,
+   "upstream_warm_ms": 143.396
+  },
+  "simpleLast": {
+   "requests": 1000,
+   "status": 200,
+   "upstream_warm_ms": 597.737
+  }
+ },
+ "gzip": {
+  "text10m": {
+   "bytes": 10000000,
+   "status": 200,
+   "compressed": 819790,
+   "upstream_warm_ms": 1969.937
+  },
+  "zeros20m": {
+   "bytes": 20000000,
+   "status": 200,
+   "compressed": 19465,
+   "upstream_warm_ms": 93.353
+  },
+  "rand2m": {
+   "bytes": 2000000,
+   "status": 200,
+   "compressed": 2000633,
+   "upstream_warm_ms": 70.185
+  }
+ }
+}

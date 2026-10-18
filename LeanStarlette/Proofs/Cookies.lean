@@ -343,8 +343,13 @@ theorem set_eq_map (l : List (String × String)) (k v : String) (i : Nat) (hi : 
 
 theorem CookieDict.set_rep {d : CookieDict} {l : List (String × String)} (h : d.Rep l) (k v : String) :
     (d.set k v).Rep (dictSet l k v) := by
-  unfold CookieDict.set dictSet
-  cases hidx : d.index[k]? with
+  obtain ⟨items, index⟩ := d
+  rw [show CookieDict.set ⟨items, index⟩ k v = (match index[k]? with
+      | some i => ⟨items.set! i (k, v), index⟩
+      | none => ⟨items.push (k, v), index.insert k items.size⟩ : CookieDict) from rfl]
+  have hit : items.toList = l := h.items
+  unfold dictSet
+  cases hidx : index[k]? with
   | some i =>
     obtain ⟨hi, hk⟩ := h.some_ k i hidx
     have hany : l.any (·.1 == k) = true := List.any_eq_true.2 ⟨l[i], List.getElem_mem hi, by simp [hk]⟩
@@ -352,7 +357,7 @@ theorem CookieDict.set_rep {d : CookieDict} {l : List (String × String)} (h : d
     have hmap : (l.map fun p => if p.1 == k then (p.1, v) else p).map Prod.fst = l.map Prod.fst := by
       simp only [List.map_map]; congr 1; funext p; simp only [Function.comp_apply]; split <;> rfl
     refine ⟨?_, ?_, ?_, ?_⟩
-    · simp [Array.set!, Array.toList_setIfInBounds, h.items, set_eq_map l k v i hi hk h.nodup]
+    · simp [Array.set!, Array.toList_setIfInBounds, hit, set_eq_map l k v i hi hk h.nodup]
     · rw [hmap]; exact h.nodup
     · intro k' j hj
       obtain ⟨hj', e⟩ := h.some_ k' j hj
@@ -367,8 +372,8 @@ theorem CookieDict.set_rep {d : CookieDict} {l : List (String × String)} (h : d
     have hany : l.any (·.1 == k) = false := by
       simp only [List.any_eq_false, beq_iff_eq]; exact h.none_ k hidx
     simp only [hany, Bool.false_eq_true, ite_false]
-    have hsz : d.items.size = l.length := by rw [← Array.length_toList, h.items]
-    refine ⟨by simp [h.items], ?_, ?_, ?_⟩
+    have hsz : items.size = l.length := by rw [← Array.length_toList, h.items]
+    refine ⟨by simp [hit], ?_, ?_, ?_⟩
     · simp only [List.map_append, List.map_cons, List.map_nil, List.nodup_append, List.nodup_cons,
         List.not_mem_nil, not_false_eq_true, List.nodup_nil, and_self, List.mem_cons, List.mem_map,
         true_and, h.nodup]
@@ -397,6 +402,24 @@ theorem CookieDict.set_rep {d : CookieDict} {l : List (String × String)} (h : d
           subst hp
           simpa using e
 
+theorem pyStripFast_eq (s : List Char) : pyStripFast s = pyStrip s := by
+  unfold pyStripFast pyStrip
+  generalize s.dropWhile PyRe.isSpace = t
+  cases h : t.getLast? with
+  | none => simp [List.getLast?_eq_none_iff.1 h]
+  | some c =>
+    simp only [h]
+    by_cases hc : PyRe.isSpace c = true
+    · simp [hc]
+    · obtain ⟨ys, rfl⟩ := List.getLast?_eq_some_iff.1 h
+      simp [hc]
+
+theorem cookieChunkKVFast_eq : cookieChunkKVFast = cookieChunkKV := by
+  funext c; simp only [cookieChunkKVFast, cookieChunkKV, pyStripFast_eq]
+
+theorem splitAllStr_eq (sep : Char) (s : String) : splitAllStr sep s = splitAll sep s.toList := by
+  simp only [splitAllStr, splitAll, String.foldl_eq_foldl_toList]
+
 theorem CookieDict.fold_rep : ∀ (cs : List (List Char)) (d : CookieDict) (l : List (String × String)),
     d.Rep l → (cs.foldl CookieDict.chunk d).Rep (cs.foldl cookieChunk l)
   | [], _, _, h => h
@@ -404,13 +427,15 @@ theorem CookieDict.fold_rep : ∀ (cs : List (List Char)) (d : CookieDict) (l : 
     simp only [List.foldl_cons]
     apply CookieDict.fold_rep cs
     unfold CookieDict.chunk cookieChunk
+    rw [cookieChunkKVFast_eq]
     cases cookieChunkKV c with
     | none => exact h
     | some kv => exact CookieDict.set_rep h kv.1 kv.2
 
 /-- **The linear-time `cookieParser` is `cookieParserSpec`.** -/
 theorem cookieParser_eq_spec (s : String) : cookieParser s = cookieParserSpec s :=
-  (CookieDict.fold_rep _ {} [] ⟨rfl, List.nodup_nil, by simp, by simp⟩).items
+  by rw [cookieParser, splitAllStr_eq]
+     exact (CookieDict.fold_rep _ {} [] ⟨rfl, List.nodup_nil, by simp, by simp⟩).items
 
 /-- **`cookie_parser` reads back what a browser sends for cookies set with
 `set_cookie`**: legal, distinct names and any values. -/
