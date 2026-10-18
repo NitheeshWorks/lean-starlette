@@ -8,6 +8,7 @@ import LeanStarlette.Proofs.Forms
 import LeanStarlette.Proofs.TestClient
 import LeanStarlette.Proofs.Chunked
 import LeanStarlette.Proofs.Middleware
+import LeanStarlette.Proofs.Cookies
 
 /-!
 # The harness: one `Verified<Layer>` structure per layer
@@ -105,7 +106,8 @@ theorem theVerifiedTestClient : VerifiedTestClient where
   hasHost := scope_has_host
   response := test_response_body
 
-/-- Middleware (m5): the stack, trusted hosts, the HTTPS redirect, CORS. -/
+/-- Middleware (m5): the stack, trusted hosts, the HTTPS redirect, CORS,
+cookies. -/
 structure VerifiedMiddleware where
   stackOrder : Spec.MiddlewareStackOrder
   trustedHostReject : Spec.TrustedHostReject
@@ -113,6 +115,8 @@ structure VerifiedMiddleware where
   httpsRedirect : Spec.HttpsRedirect
   corsPreflight : Spec.CorsPreflight
   corsAllowedOrigin : Spec.CorsAllowedOrigin
+  cookieParsePrint : Spec.CookieParsePrint
+  setCookieDeleteCookie : Spec.SetCookieDeleteCookie
 
 theorem theVerifiedMiddleware : VerifiedMiddleware where
   stackOrder := middleware_stack_order
@@ -121,5 +125,7 @@ theorem theVerifiedMiddleware : VerifiedMiddleware where
   httpsRedirect := https_redirect
   corsPreflight := cors_preflight
   corsAllowedOrigin := cors_allowed_origin
+  cookieParsePrint := cookie_parse_print
+  setCookieDeleteCookie := fun r jar k v hk => ⟨set_cookie_receive r jar k v hk, delete_cookie_receive r jar k hk⟩
 
 end LeanStarlette

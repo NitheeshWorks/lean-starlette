@@ -63,6 +63,30 @@ structure PathParams where
 
 /-! ## Requests -/
 
+/-! ## Sessions and authentication -/
+
+/-- `starlette.middleware.sessions.Session` (`scope["session"]`): a JSON
+object, in order, and whether the application read it or changed it. -/
+structure SessionState where
+  data : Array (String × LeanJson.Json) := #[]
+  accessed : Bool := false
+  modified : Bool := false
+
+/-- `AuthCredentials(scopes)` (`scope["auth"]`). -/
+structure AuthCredentials where
+  scopes : List String := []
+  deriving Inhabited, BEq, Repr
+
+/-- `BaseUser` (`scope["user"]`): `is_authenticated`, `display_name`,
+`identity` (upstream raises `NotImplementedError` where it is `none`), and
+the application's own fields as JSON (a subclass's attributes). -/
+structure BaseUser where
+  is_authenticated : Bool
+  display_name : String
+  identity : Option String := none
+  data : LeanJson.Json := .null
+  deriving Inhabited, BEq, Repr
+
 /-- An HTTP request, as Starlette's `Request` sees its ASGI scope and body.
 `path` is percent-decoded, as the ASGI `path` is. -/
 structure Request where
@@ -83,6 +107,12 @@ structure Request where
   /-- The application's `url_path_for`, for `request.url_for`: the path and
   the route's protocol. Filled in by the application. -/
   urlPathFor : String → List (String × String) → Option (String × String) := fun _ _ => none
+  /-- `scope["session"]`, set by `SessionMiddleware`. -/
+  session? : Option (IO.Ref SessionState) := none
+  /-- `scope["auth"]`, set by `AuthenticationMiddleware`. -/
+  auth? : Option AuthCredentials := none
+  /-- `scope["user"]`, set by `AuthenticationMiddleware`. -/
+  user? : Option BaseUser := none
 
 /-! ## Responses -/
 

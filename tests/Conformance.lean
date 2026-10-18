@@ -1,4 +1,5 @@
 import LeanStarlette
+import tests.MiddlewareUsage
 
 /-!
 # Conformance cases
@@ -923,8 +924,9 @@ def slowUploadCases : List Case := [
     ok (ms ≤ 4000 && !statusIs out "200")⟩
 ]
 
-/-- Urlencoded cases timed at about twice Starlette: lean-multipart
-(964594a) decodes and scans at Python's speed. -/
+/-- Urlencoded cases bounded at twice Starlette's warm best of 5 (the
+golden's `upstream_warm_ms`), timed here as the best of 5 after a first
+call: lean-multipart (964594a) decodes and scans at Python's speed. -/
 def formTightCases : List String := [
   "test_urlencoded_field_exceeds_max_part_size_raise",
   "test_urlencoded_field_name_exceeds_max_part_size_raise",
@@ -949,16 +951,31 @@ def formGoldenCase (line : Json) : Option Case := do
   let content ← (line.getObjVal? "content").bind Json.getStr?
   let upMs : Option Nat := (line.getObjVal? "upstream_ms").map fun j =>
     (String.fromUTF8! (ByteArray.mk ((LeanJson.to_json j).val.toList.takeWhile (· != 46)).toArray)).toNat!
-  let bound := if formTightCases.contains name then 2 * (upMs.getD 0 + 1) + 4
-    else match upMs with | some u => max 20 (3 * u + 3) | none => 20
+  -- warm best of 5, in microseconds (the tight cases' bound is twice it)
+  let upWarmUs : Option Nat := (line.getObjVal? "upstream_warm_ms").map fun j =>
+    let t := String.fromUTF8! (LeanJson.to_json j).val
+    match t.splitOn "." with
+    | [i] => i.toNat! * 1000
+    | i :: f :: _ => i.toNat! * 1000 + ((f ++ "000").toList.take 3).foldl (fun a c => a * 10 + (c.toNat - 48)) 0
+    | [] => 0
+  let tight := formTightCases.contains name
+  let bound := match upMs with | some u => max 20 (3 * u + 3) | none => 20
   pure ⟨s!"tests/test_formparsers.py (golden, Starlette 1.8.0)", s!"form: {name}", do
     let headers := match ct with | some c => [("content-type", c)] | none => []
     let t0 ← IO.monoMsNow
     let r ← TestClient.request (formApp kind lim) "POST" "/" headers body
     let ms := (← IO.monoMsNow) - t0
-    let good := r.status_code == status.toNat && r.text == content && ms ≤ bound
-    if formTightCases.contains name then
-      IO.println s!"      {ms} ms (upstream {upMs.getD 0} ms, bound {bound} ms)"
+    let mut good := r.status_code == status.toNat && r.text == content && (tight || ms ≤ bound)
+    if tight then
+      -- best of 5 after the first call, against twice upstream's warm best of 5
+      let mut best := 1000000000
+      for _ in [0:5] do
+        let t1 ← IO.monoNanosNow
+        let _ ← TestClient.request (formApp kind lim) "POST" "/" headers body
+        best := min best ((← IO.monoNanosNow) - t1)
+      let boundUs := 2 * upWarmUs.getD 0
+      IO.println s!"      best of 5: {best / 1000} us (upstream warm best of 5: {upWarmUs.getD 0} us, bound {boundUs} us)"
+      good := good && best / 1000 ≤ boundUs
     unless good do
       IO.println s!"      got {r.status_code} in {ms} ms (bound {bound}) {(String.ofList (r.text.toList.take 300)).quote}"
       IO.println s!"      want {status} {(String.ofList (content.toList.take 300)).quote}"

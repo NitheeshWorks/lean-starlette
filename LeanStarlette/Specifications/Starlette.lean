@@ -244,4 +244,18 @@ def CorsAllowedOrigin : Prop :=
     (corsConfig origins methods headers cred rx pn expose maxAge).isAllowedOrigin o = true ↔
       "*" ∈ origins ∨ (∃ p, rx = some p ∧ Regex.Matches p.re none o.toList none) ∨ o ∈ origins
 
+/-- `cookie_parser` reads back the `Cookie` header a browser sends for
+cookies set by `set_cookie`: legal, distinct names and any values. -/
+def CookieParsePrint : Prop :=
+  ∀ (jar : List (String × String)), (∀ p ∈ jar, isCookieKey p.1 = true) → (jar.map Prod.fst).Nodup →
+    cookieParser (cookieHeader jar) = jar
+
+/-- After `set_cookie(key, value)` a browser holds the quoted value under
+the name; after `delete_cookie(key)` it holds nothing under it, whatever it
+held and whatever the response set before. -/
+def SetCookieDeleteCookie : Prop :=
+  ∀ (r : Response) (jar : CookieJar) (k v : String) (hk : isCookieKey k = true),
+    (CookieJar.receiveAll jar (r.set_cookie k v (_h := hk))).lookup k = some (cookieQuote v) ∧
+    (CookieJar.receiveAll jar (r.delete_cookie k (h := hk))).lookup k = none
+
 end LeanStarlette.Spec

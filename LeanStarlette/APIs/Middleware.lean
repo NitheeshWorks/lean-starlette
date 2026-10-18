@@ -1,5 +1,6 @@
 import Lean
 import LeanStarlette.RepoImpl.Middleware
+import LeanStarlette.RepoImpl.Sessions
 
 /-!
 # APIs: middleware

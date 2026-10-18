@@ -179,9 +179,16 @@ for name, kind, limits, ctype, body in cases:
     t0 = time.monotonic()
     r = client.post("/", content=raw, headers=headers)
     ms = (time.monotonic() - t0) * 1000
+    # warm best of 5 (stack policy for tight bounds): the first call above warms up
+    warm = []
+    for _ in range(5):
+        t1 = time.monotonic()
+        client.post("/", content=raw, headers=headers)
+        warm.append((time.monotonic() - t1) * 1000)
     print(json.dumps({
         "name": name, "kind": kind, "limits": limits, "content_type": ctype,
         "body": body if isinstance(body, dict) else raw.decode("latin-1"),
         "status": r.status_code, "content_type_out": r.headers.get("content-type"),
         "content": r.content.decode("utf-8"), "upstream_ms": round(ms, 1),
+        "upstream_warm_ms": round(min(warm), 2),
     }, ensure_ascii=False))

@@ -61,10 +61,10 @@ def trustedHostDecision (allowedHosts : List String) (wwwRedirect : Bool) (r : R
     else .reject
 
 /-- **`TrustedHostMiddleware(app, allowed_hosts=["*"], www_redirect=True)`**.
-The patterns are checked when the middleware is built (`by decide` for a
+The patterns are checked when the middleware is built (`by decide +kernel` for a
 literal), where upstream asserts. -/
 def TrustedHostMiddleware (allowed_hosts : List String := ["*"]) (www_redirect : Bool := true)
-    (_h : ∀ p ∈ allowed_hosts, ValidHostPattern p := by decide) : Middleware := fun app req =>
+    (_h : ∀ p ∈ allowed_hosts, ValidHostPattern p := by decide +kernel) : Middleware := fun app req =>
   match trustedHostDecision allowed_hosts www_redirect req with
   | .allow => app req
   | .redirect url => pure (RedirectResponse url)

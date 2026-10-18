@@ -7,6 +7,11 @@
     [[lean_lib]]
     name = "LeanStarlette"
 
+    # Test modules the executables import (not part of the library).
+    [[lean_lib]]
+    name = "TestSupport"
+    roots = ["tests.MiddlewareUsage"]
+
     # Property tests for what is tested rather than proved. No dependencies, runs
     # in well under a second: `lake exe props [seed]`.
     [[lean_exe]]
