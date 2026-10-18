@@ -98,9 +98,8 @@ Listed here with the reason, and in `docs/traceability.toml` with
   (`tests/golden/testclient-starlette-1.8.0.jsonl`, 47 calls over
   `tests/test_testclient.py`'s cases and the scope field by field) and a
   property (query parameters lean-httpx encodes reach `query_params`). The
-  path is `unquote(url.path)` as upstream, which decodes twice (UP-058,
-  already reported upstream as Kludex/starlette#2587); matching it keeps the
-  golden tests honest. Raw ASGI apps, response trailers and debug extensions
+  path is the encoded path decoded once, as a server gives it (a deviation,
+  below). Raw ASGI apps, response trailers and debug extensions
   are out of scope (applications here are Lean `App`s); the WebSocket test
   session and lifespan context come with the m7 card.
 
@@ -182,6 +181,12 @@ Each has a `status = "deviation"` row in `docs/traceability.toml`.
     request line is rewritten;
   * a head not complete within `config.headerTimeout` is `408`.
   Pass a `Std.Http.Config` to tighten the rest.
+* **`TestClient` decodes the path once**, as a server does: `/x%2541`
+  reaches the application as `/x%41`, as over a socket (conformance
+  `tcSocketCases`). Starlette's test transport applies `unquote` to httpx's
+  already-decoded `url.path`, so its application sees `/xA` (UP-058,
+  Kludex/starlette#2587); the golden case `scope: double-encoded path`
+  expects the server's value (`tcDeviation`).
 * **`TestClient` sends `accept-encoding: gzip, deflate`** (lean-httpx's
   decoders); upstream's `test_request_headers` expects `zstd` too, which
   httpx sends only with a zstd decoder installed.

@@ -14,8 +14,10 @@ from what the application sent. `LeanStarlette/TestClient.lean` runs it.
   URL has none (80 for `http`/`ws`, 443 for `https`/`wss`).
 * `headers`: a `host` header (the URL's netloc) when the request has none,
   then every request header in order, its name lower-cased.
-* `path` is `unquote(url.path)`, as upstream: httpx's `url.path` is already
-  decoded, so a path is decoded twice (`/x%2541` reaches the app as `/xA`).
+* `path` is the request target's path decoded once, as a server gives it
+  (`/x%2541` reaches the app as `/x%41`). Upstream applies `unquote` to
+  httpx's already-decoded `url.path`, decoding twice (`/xA`): UP-058,
+  Kludex/starlette#2587, a documented deviation.
 * A `HEAD` response has no body.
 -/
 
@@ -31,6 +33,9 @@ def scopeHeaders (r : LeanHttpx.Request) : List (String × String) :=
   (if r.headers.raw.any (fun p => lowerAscii p.1 == "host") then [] else [("host", r.url.netloc)]) ++
     r.headers.raw.map fun p => (lowerAscii p.1, p.2)
 
+/-- The encoded path of a URL, without its query (`raw_path` in the scope). -/
+def rawPathOf (u : LeanHttpx.URL) : String := (u.rawPath.splitOn "?").headD "/"
+
 /-- The request the application sees for an httpx request (the `scope`
 `_TestClientTransport.handle_request` builds), with the whole body. -/
 def scopeRequest (rootPath : String) (client : String × Nat) (r : LeanHttpx.Request) : Request where
@@ -38,7 +43,7 @@ def scopeRequest (rootPath : String) (client : String × Nat) (r : LeanHttpx.Req
   scheme := r.url.scheme
   server := some (r.url.host, r.url.port.getD (schemeDefaultPort r.url.scheme))
   client := some client
-  path := unquote r.url.path
+  path := unquote (rawPathOf r.url)
   root_path := rootPath
   query_string := r.url.query
   headers := Headers.ofList (scopeHeaders r)

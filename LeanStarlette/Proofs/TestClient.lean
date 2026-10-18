@@ -40,13 +40,16 @@ theorem scope_has_host (rootPath : String) (client : String × Nat) (r : LeanHtt
     simp [lowerAscii, asciiLower]
 
 /-- Method, query string, body, root path and client pass through; the
-server is the URL's host and port, or the scheme's default port. -/
+server is the URL's host and port, or the scheme's default port; the path is
+the encoded path decoded once, as a server decodes the request target (not
+twice, as upstream's test transport: UP-058). -/
 theorem scope_passthrough (rootPath : String) (client : String × Nat) (r : LeanHttpx.Request) :
     let q := scopeRequest rootPath client r
     q.method = r.method ∧ q.query_string = r.url.query ∧ q.bodyBytes = r.content ∧
       q.root_path = rootPath ∧ q.client = some client ∧
-      q.server = some (r.url.host, r.url.port.getD (schemeDefaultPort r.url.scheme)) :=
-  ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
+      q.server = some (r.url.host, r.url.port.getD (schemeDefaultPort r.url.scheme)) ∧
+      q.path = unquote (rawPathOf r.url) :=
+  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 /-- A `HEAD` response has no body; any other carries the application's,
 with its status and headers. -/

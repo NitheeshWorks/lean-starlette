@@ -1055,6 +1055,24 @@ def tcResult (client : LeanHttpx.Client) (call : Json) : IO Json := do
       ("jar", .arr (jar.map fun (n, v, d) => Json.arr #[.str n, .str v, .str d]))]
   catch e => return Json.obj #[("error", .str (toString e))]
 
+/-- Expected values that differ from Starlette's TestClient on purpose:
+`scope: double-encoded path` expects the path a server gives, decoded once
+(`/x%2541` is `/x%41`), where Starlette's TestClient decodes twice (`/xA`;
+UP-058, Kludex/starlette#2587). The body changes, and its content-length. -/
+def tcDeviation (name : String) (w : Json) : Json :=
+  if name != "scope: double-encoded path" then w else
+  let fix (b : String) : String := b.replace "/echo/xA" "/echo/x%41"
+  match w with
+  | .obj kvs =>
+    let body := match kvs.find? (·.1 == "body") with | some (_, .str b) => fix b | _ => ""
+    .obj (kvs.map fun (k, v) => match k, v with
+      | "body", .str _ => (k, .str body)
+      | "headers", .arr hs => (k, .arr (hs.map fun h => match h with
+          | .arr #[.str "content-length", .str _] => .arr #[.str "content-length", .str (toString body.length)]
+          | x => x))
+      | _, _ => (k, v))
+  | x => x
+
 def tcGoldenCase (line : Json) : Option Case := do
   let name ← (line.getObjVal? "name").bind Json.getStr?
   let opts := (line.getObjVal? "client").getD (.obj #[])
@@ -1073,12 +1091,37 @@ def tcGoldenCase (line : Json) : Option Case := do
       (follow_redirects := (bool "follow_redirects").getD true) (client := peer)
     let mut good := true
     for (call, w) in calls.toList.zip want.toList do
+      let w := tcDeviation name w
       let got ← tcResult client call
       unless toString got == toString w do
         good := false
         IO.println s!"      got  {(String.ofList ((toString got).toList.take 700))}"
         IO.println s!"      want {(String.ofList ((toString w).toList.take 700))}"
     ok good⟩
+
+def tcPort : Nat := 18734
+
+/-- The fields of `echo` that depend only on the target. -/
+def tcTargetFields (body : String) : String :=
+  match from_json body.toUTF8 with
+  | .ok j => toString (Json.obj #[("path", (j.val.getObjVal? "path").getD .null),
+      ("url", (j.val.getObjVal? "url").getD .null), ("query_string", (j.val.getObjVal? "query_string").getD .null)])
+  | .error _ => s!"not JSON: {body}"
+
+/-- TestClient and a real server (`Application.run` over a socket) give the
+application the same path for a target with `%25`: decoded once. -/
+def tcSocketCases : List Case := [
+  ⟨"UP-058 (Kludex/starlette#2587): TestClient and the server agree on a %25 path [socket]",
+    "testclient: /echo/x%2541 is /echo/x%41, as over a socket", do
+    let raw := "GET /echo/x%2541?q=%2541 HTTP/1.1\r\nHost: testserver\r\nConnection: close\r\n\r\n".toUTF8
+    let out ← sendRaw tcPort raw
+    let server := tcTargetFields ((out.splitOn "\r\n\r\n").getLastD "")
+    let client ← LeanStarlette.TestClient tcApp
+    let r ← client.get "/echo/x%2541?q=%2541"
+    let viaClient := tcTargetFields ((String.fromUTF8? r.content).getD "")
+    IO.println s!"      server {server}"
+    IO.println s!"      client {viaClient}"
+    ok (statusIs out "200" && server == viaClient && has server "\"path\":\"/echo/x%41\"")⟩]
 
 def tcGoldenCases : IO (List Case) := do
   let lines ← IO.FS.lines "tests/golden/testclient-starlette-1.8.0.jsonl"
@@ -1290,10 +1333,11 @@ def main : IO UInt32 := do
   let formGolden ← formGoldenCases
   let tcGolden ← tcGoldenCases
   let _ ← IO.asTask (socketApp.run (port := socketPort)) .dedicated
+  let _ ← IO.asTask (tcApp.run (port := tcPort)) .dedicated
   let _ ← IO.asTask ((formApp "plain" {}).run (port := formPort)) .dedicated
   let _ ← IO.asTask ((formApp "plain" {}).run (port := stallPort) (config := { lingeringTimeout := 1000 })) .dedicated
   IO.sleep 1500
-  let cases := cases ++ golden ++ filesGolden ++ filesBehaviour ++ formGolden ++ tcGolden ++ formDataCases ++ socketCases ++ chunkedCases ++ slowUploadCases
+  let cases := cases ++ golden ++ filesGolden ++ filesBehaviour ++ formGolden ++ tcGolden ++ formDataCases ++ socketCases ++ chunkedCases ++ tcSocketCases ++ slowUploadCases
   for c in cases do
     let ok ← try c.run catch e => do IO.println s!"      {e}"; pure false
     IO.println s!"{if ok then "ok  " else "FAIL"}  {c.name}  [{c.upstream}]"

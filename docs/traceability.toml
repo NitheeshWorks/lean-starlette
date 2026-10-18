@@ -463,11 +463,11 @@ test = ["tests/Conformance.lean::tcGoldenCases", "tests/golden/testclient-starle
 [[requirement]]
 id = "testclient.scope"
 upstream = "starlette/testclient.py:_TestClientTransport.handle_request"
-title = "The scope of a test request: every header (name lower-cased), host from the URL when absent, server port defaulted by scheme, method/query/body unchanged, path unquote(url.path) as upstream (UP-058: decoded twice)"
-status = "implemented"
-realises = ["LeanStarlette.scopeRequest", "LeanStarlette.scopeHeaders", "LeanStarlette.schemeDefaultPort", "LeanStarlette.testScope"]
+title = "The scope of a test request: every header (name lower-cased), host from the URL when absent, server port defaulted by scheme, method/query/body unchanged. Deviation: the path is the raw path decoded once, as a server gives it (/x%2541 is /x%41); Starlette's TestClient decodes twice (/xA), UP-058, Kludex/starlette#2587"
+status = "deviation"
+realises = ["LeanStarlette.scopeRequest", "LeanStarlette.scopeHeaders", "LeanStarlette.schemeDefaultPort", "LeanStarlette.rawPathOf", "LeanStarlette.testScope"]
 theorem = ["LeanStarlette.scope_headers_complete", "LeanStarlette.scope_has_host", "LeanStarlette.scope_passthrough"]
-test = ["tests/Conformance.lean::tcGoldenCases", "tests/Props.lean::properties"]
+test = ["tests/Conformance.lean::tcGoldenCases", "tests/Conformance.lean::tcSocketCases", "tests/Conformance.lean::tcDeviation", "tests/Props.lean::properties"]
 
 [[requirement]]
 id = "testclient.response"
