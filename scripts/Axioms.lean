@@ -74,8 +74,13 @@ unsafe def main (args : List String) : IO UInt32 := do
   -- Only the library's own modules, and their constants straight from the
   -- module data (no list of every imported constant).
   let mine := (env.header.moduleNames.zip env.header.moduleData).filter (root.isPrefixOf ·.1)
+  -- An equation lemma generated on demand can be recorded by every module that
+  -- asked for it, so a name is checked and counted once.
+  let mut seen : Std.HashSet Name := {}
   for (_, md) in mine do
     for n in md.constNames do
+      if seen.contains n then continue
+      seen := seen.insert n
       let some ci := env.find? n | continue
       -- `partial def f` makes `f` an opaque constant implemented by `f._unsafe_rec`.
       -- A definition by well-founded recursion also gets an `_unsafe_rec` twin
