@@ -33,7 +33,7 @@ def main():
         tmp.write_text(body)
         proc = subprocess.run(["lake", "env", "lean", str(tmp)], cwd=REPO, capture_output=True, text=True)
         for line in (proc.stdout + proc.stderr).splitlines():
-            if "error" in line: bad.append(line.strip())
+            if ": error" in line: bad.append(line.strip())
     print(f"{len(rows)} requirements, {len(set(symbols))} symbols, {len(bad)} problems")
     for b in bad: print("  " + b)
     sys.exit(1 if bad else 0)

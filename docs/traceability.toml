@@ -361,6 +361,81 @@ realises = ["Keel.Convertor.int", "LeanStarlette.BaseRoute.matches"]
 test = ["tests/Conformance.lean::benchCases"]
 
 [[requirement]]
+id = "forms.urlencoded"
+upstream = "tests/test_formparsers.py::test_urlencoded_request_data"
+title = "request.form() on application/x-www-form-urlencoded: lean-multipart's Starlette FormParser, unquote_plus(latin-1) decoded"
+status = "implemented"
+realises = ["LeanStarlette.Request.form", "LeanStarlette.formItems", "LeanStarlette.parseRawForm", "LeanStarlette.urlencodedItem", "LeanStarlette.parseForm"]
+theorem = ["LeanStarlette.form_parse_agrees"]
+test = ["tests/Conformance.lean::formGoldenCases", "tests/Props.lean::properties", "tests/golden/forms-starlette-1.8.0.jsonl"]
+
+[[requirement]]
+id = "forms.multipart"
+upstream = "tests/test_formparsers.py::test_multipart_request_multiple_files"
+title = "request.form() on multipart/form-data: lean-multipart's Starlette MultiPartParser; names, filenames, text in the request charset, latin-1 fallback (_user_safe_decode)"
+status = "implemented"
+realises = ["LeanStarlette.multipartItem", "LeanStarlette.formContentType", "LeanStarlette.userSafeDecode", "LeanStarlette.RawForm.decode"]
+theorem = ["LeanStarlette.form_parse_agrees"]
+test = ["tests/Conformance.lean::formGoldenCases", "tests/golden/forms-starlette-1.8.0.jsonl"]
+
+[[requirement]]
+id = "forms.limits"
+upstream = "tests/test_formparsers.py::test_max_part_size_exceeds_limit"
+title = "max_files, max_fields, max_part_size enforced; a violation or malformed multipart is HTTPException(400) with Starlette's message"
+status = "implemented"
+realises = ["LeanStarlette.RawForm.WithinLimits", "LeanStarlette.FormItemsWithinLimits", "LeanStarlette.formErrorMessage"]
+theorem = ["LeanStarlette.form_limits_enforced", "LeanStarlette.RawForm.decode_within", "LeanStarlette.form_error_400"]
+test = ["tests/Conformance.lean::formGoldenCases", "tests/Props.lean::properties", "tests/Bench.lean"]
+
+[[requirement]]
+id = "forms.charset"
+upstream = "starlette/formparsers.py:MultiPartParser.parse (charset)"
+title = "Form charsets: UTF-8 spellings decode as UTF-8; latin-1, ASCII and unknown names as latin-1. Other codecs Python knows (utf-16, cp1252, ...) are decoded as latin-1"
+status = "deviation"
+realises = ["LeanStarlette.FormCharset.lookup"]
+test = ["tests/Conformance.lean::formGoldenCases"]
+
+[[requirement]]
+id = "forms.uploadfile"
+upstream = "tests/test_datastructures.py::test_upload_file_file_input"
+title = "UploadFile: filename, content_type, headers, size, read, seek, write, close, repr; uploads stay in memory (upstream spools to disk past 1 MiB)"
+status = "tested"
+realises = ["LeanStarlette.UploadFile.read", "LeanStarlette.UploadFile.seek", "LeanStarlette.UploadFile.write", "LeanStarlette.UploadFile.close", "LeanStarlette.UploadFile.repr"]
+test = ["tests/Conformance.lean::formDataCases"]
+
+[[requirement]]
+id = "forms.formdata"
+upstream = "tests/test_datastructures.py::test_formdata"
+title = "FormData multi-dict: get (last), getlist, keys, items, len, in, repr; form.close() closes every upload"
+status = "tested"
+realises = ["LeanStarlette.FormData.get?", "LeanStarlette.FormData.getlist", "LeanStarlette.FormData.keys", "LeanStarlette.FormData.close", "LeanStarlette.FormData.ofItems"]
+test = ["tests/Conformance.lean::formDataCases", "tests/Props.lean::properties"]
+
+[[requirement]]
+id = "transport.body-preread"
+upstream = "uvicorn: request bodies streamed to the app"
+title = "A Content-Length body is read by the transport before Std.Http parses it (linear; Std.Http alone is quadratic in the body), within maxBodySize; 50 MB in under 1 s"
+status = "tested"
+realises = ["LeanStarlette.readBody", "LeanStarlette.joinChunks", "LeanStarlette.plainBodyLength"]
+test = ["tests/Bench.lean", "tests/Conformance.lean::slowUploadCases"]
+
+[[requirement]]
+id = "transport.body-stall"
+upstream = "uvicorn: no body read timeout"
+title = "A body that stalls longer than config.lingeringTimeout is 408 (uvicorn waits indefinitely); a slow body that keeps arriving is served"
+status = "deviation"
+realises = ["LeanStarlette.readBody"]
+test = ["tests/Conformance.lean::slowUploadCases"]
+
+[[requirement]]
+id = "forms.urlencoded-speed"
+upstream = "tests/test_formparsers.py (multi-MiB urlencoded values)"
+title = "A multi-MiB urlencoded value takes about 65 ms per MiB in lean-multipart's parser (upstream 3 ms); three golden cases are bounded at 150 ms until lean-multipart's fix"
+status = "partial"
+realises = ["LeanStarlette.parseRawForm"]
+test = ["tests/Conformance.lean::formSlowCases"]
+
+[[requirement]]
 id = "excluded.host-websocket-lifespan"
 upstream = "tests/test_routing.py::test_host_routing"
 title = "Host routes, WebSocketRoute, lifespan, class endpoints: later cards (m7)"

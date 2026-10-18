@@ -81,6 +81,25 @@ def respWith (i : Nat) (s : String) : Response :=
   | 4 => PlainTextResponse s (status_code := 101)
   | _ => PlainTextResponse s (status_code := 500)
 
+def randFields (r : Rng) (maxN : Nat) : List (String × String) × Rng := Id.run do
+  let (n, r0) := r.nat maxN
+  let mut r := r0
+  let mut items : List (String × String) := []
+  for _ in [0:n] do
+    let (k, r1) := r.string 6
+    let (v, r2) := r1.string 6
+    r := r2
+    items := items ++ [(k, v)]
+  return (items, r)
+
+def urlBody (fs : List (String × String)) : ByteArray :=
+  ("&".intercalate (fs.map fun (k, v) => quotePlus k ++ "=" ++ quotePlus v)).toUTF8
+
+def formTexts (items : List (String × FormItem)) : List (String × String) :=
+  items.filterMap fun (k, v) => match v with | .text s => some (k, s) | .file _ => none
+
+def urlCt : Option String := some "application/x-www-form-urlencoded"
+
 def properties : List Property := [
   ⟨"unquote (quote s) = s", fun r =>
     let (s, r) := r.string
@@ -129,7 +148,27 @@ def properties : List Property := [
     let (n, r) := r.nat 100000
     let p1 := (wordApp.urlPathFor "user" [("username", w)]).map toString
     let p2 := (wordApp.urlPathFor "n" [("n", toString n)]).map toString
-    (check "route" (p1 == some s!"/users/{w}" && p2 == some s!"/n/{n}") (fun _ => w), r)⟩
+    (check "route" (p1 == some s!"/users/{w}" && p2 == some s!"/n/{n}") (fun _ => w), r)⟩,
+  ⟨"an urlencoded form of quote_plus'd fields parses back to them", fun r =>
+    let (fs, r) := randFields r 6
+    let fs := fs.filter fun (k, v) => !(k.isEmpty && v.isEmpty)
+    let got := (formItems {} urlCt (urlBody fs)).toOption.map formTexts
+    (check "form-url" (got == some fs) (fun _ => toString fs), r)⟩,
+  ⟨"an urlencoded form is accepted iff it has at most max_fields fields", fun r =>
+    let (n, r) := r.nat 12
+    let (m, r) := r.nat 12
+    let body := ("&".intercalate ((List.range (n + 1)).map fun i => s!"f{i}=v")).toUTF8
+    let ok := (formItems { maxFields := m } urlCt body).toBool
+    (check "form-limit" (ok == decide (n + 1 ≤ m)) (fun _ => s!"{n + 1} fields, max {m}"), r)⟩,
+  ⟨"FormData: get is the last of getlist, keys are distinct, len counts them", fun r =>
+    let (fs, r) := randFields r 6
+    let (k, r) := r.string 6
+    let fd : FormData := { multiItems := fs.map fun (a, b) => (a, .text b) }
+    let all := (fd.getlist k).filterMap (·.text?)
+    let ok := ((fd.get? k).bind (·.text?)) == all.getLast? &&
+      fd.keys.eraseDups == fd.keys && fd.length == (fs.map (·.1)).eraseDups.length &&
+      fd.contains k == !all.isEmpty
+    (check "formdata" ok (fun _ => toString fs), r)⟩
 ]
 
 

@@ -4,6 +4,7 @@ import LeanStarlette.Proofs.Http
 import LeanStarlette.Proofs.Background
 import LeanStarlette.Proofs.Range
 import LeanStarlette.Proofs.Files
+import LeanStarlette.Proofs.Forms
 
 /-!
 # The harness: one `Verified<Layer>` structure per layer
@@ -76,5 +77,16 @@ theorem theVerifiedFiles : VerifiedFiles where
   rangeWithin := range_within
   etag304Iff := etag_304_iff
   servedPathInside := served_path_inside
+
+/-- Forms (m4): `request.form()` over lean-multipart. -/
+structure VerifiedForms where
+  formParseAgrees : Spec.FormParseAgrees
+  formLimitsEnforced : Spec.FormLimitsEnforced
+  formError400 : Spec.FormError400
+
+theorem theVerifiedForms : VerifiedForms where
+  formParseAgrees := fun _ _ _ _ h => form_parse_agrees h
+  formLimitsEnforced := fun _ _ _ _ h => form_limits_enforced h
+  formError400 := form_error_400
 
 end LeanStarlette

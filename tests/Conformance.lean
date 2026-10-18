@@ -734,6 +734,215 @@ def goldenCases : IO (List Case) := do
   let lines ← IO.FS.lines "tests/golden/starlette-1.8.0.jsonl"
   return lines.toList.filterMap fun l => (from_json l).toOption.bind fun j => goldenCase j.val
 
+/-! ## Forms: golden from Starlette 1.8.0 (`tests/golden/record_forms.py`)
+
+The apps are `tests/test_formparsers.py`'s, mounted in an application; each
+case replays the recorded body (or rebuilds it from its recipe) and compares
+the status and the response bytes. Each case is also bounded in time: at most
+3x upstream's recorded time, and never under 20 ms. -/
+
+/-- The JSON a test app returns for one form value. -/
+def formValueJson (kind : String) (v : FormValue) : IO Json := do
+  match v with
+  | .text s => return .str s
+  | .file f =>
+    let content ← f.read
+    let opt (o : Option String) : Json := match o with | some x => .str x | none => .null
+    let mut kvs : Array (String × Json) := #[
+      ("filename", opt f.filename),
+      ("size", match ← f.size with | some n => .num (.int n) | none => .null),
+      ("content", if kind == "sizes" then .num (.int content.size) else .str (String.fromUTF8! content)),
+      ("content_type", opt f.content_type)]
+    if kind == "headers" then
+      kvs := kvs.push ("headers", .arr (f.headers.items.map fun (k, v) => Json.arr #[.str k, .str v]).toArray)
+    return .obj kvs
+
+/-- `make_app_max_parts(...)` with the output of `app`, `multi_items_app`,
+`app_with_headers`, or `sizes`. -/
+def formApp (kind : String) (lim : LeanMultipart.FormLimits) : Application :=
+  Starlette (routes := [Route "/" (fun (r : Request) => do
+    let data ← r.form (max_files := lim.maxFiles) (max_fields := lim.maxFields) (max_part_size := lim.maxPartSize)
+    let mut out : Array (String × Json) := #[]
+    if kind == "multi" then
+      for k in data.keys do
+        let vs ← (data.getlist k).mapM fun v => (formValueJson kind v : IO Json)
+        out := out.push (k, .arr vs.toArray)
+    else
+      for (k, v) in data.items do
+        out := out.push (k, ← (formValueJson kind v : IO Json))
+    (data.close : IO Unit)
+    return JSONResponse (Json.obj out) : Request → AppM Response) (methods := ["POST"])])
+
+def formPart (name : String) (value : ByteArray) (filename : Option String := none) : ByteArray :=
+  let disp := s!"form-data; name=\"{name}\"" ++ (filename.map (s!"; filename=\"{·}\"")).getD ""
+  s!"--B\r\nContent-Disposition: {disp}\r\n\r\n".toUTF8 ++ value ++ "\r\n".toUTF8
+
+def repeatBytes (b : ByteArray) (n : Nat) : ByteArray := Id.run do
+  let mut out := ByteArray.emptyWithCapacity (b.size * n)
+  for _ in [0:n] do out := out ++ b
+  return out
+
+def xs (n : Nat) : ByteArray := ByteArray.mk (Array.replicate n 120)
+
+/-- `recipe(r)` in `record_forms.py`, byte for byte. -/
+def recipeBody (kind : String) (n : Nat) : ByteArray :=
+  let close := "--B--\r\n".toUTF8
+  match kind with
+  | "urlFields" => if n == 0 then .empty else "a=1".toUTF8 ++ repeatBytes "&a=1".toUTF8 (n - 1)
+  | "urlValue" => "a=".toUTF8 ++ xs n
+  | "urlName" => xs n ++ "=1".toUTF8
+  | "mpFields" => repeatBytes (formPart "f" "v".toUTF8) n ++ close
+  | "mpFiles" => repeatBytes (formPart "f" "v".toUTF8 (some "f.txt")) n ++ close
+  | "mpValue" => formPart "f" (xs n) ++ close
+  | "mpFile" => formPart "f" (xs n) (some "big.txt") ++ close
+  | _ => .empty
+
+/-- Latin-1 text back to bytes. -/
+def latin1Bytes (s : String) : ByteArray := ByteArray.mk (s.toList.map (fun c => c.toNat.toUInt8)).toArray
+
+def formDataCases : List Case := [
+  ⟨"tests/test_datastructures.py::test_upload_file_file_input", "UploadFile read, write, seek, size", do
+    let f ← UploadFile.new "data".toUTF8 (filename := some "file") (size := some 4)
+    let a ← f.read
+    let s1 ← f.size
+    f.write " and more data!".toUTF8
+    let b ← f.read
+    let s2 ← f.size
+    f.seek 0
+    let c ← f.read
+    ok (a == "data".toUTF8 && s1 == some 4 && b.isEmpty && s2 == some 19 && c == "data and more data!".toUTF8)⟩,
+  ⟨"tests/test_datastructures.py::test_upload_file_without_size", "UploadFile without a size keeps None", do
+    let f ← UploadFile.new "data".toUTF8 (filename := some "file")
+    let a ← f.read
+    f.write " and more data!".toUTF8
+    let s ← f.size
+    f.seek 0
+    let c ← f.read
+    ok (a == "data".toUTF8 && s == none && c == "data and more data!".toUTF8)⟩,
+  ⟨"tests/test_datastructures.py::test_upload_file_repr", "repr(UploadFile)", do
+    let f ← UploadFile.new "data".toUTF8 (filename := some "file") (size := some 4)
+    ok ((← f.repr) == "UploadFile(filename='file', size=4, headers=Headers({}))")⟩,
+  ⟨"tests/test_datastructures.py::test_upload_file_repr_headers", "repr(UploadFile) with headers", do
+    let f ← UploadFile.new "data".toUTF8 (filename := some "file") (headers := Headers.ofList [("foo", "bar")])
+    ok ((← f.repr) == "UploadFile(filename='file', size=None, headers=Headers({'foo': 'bar'}))")⟩,
+  ⟨"tests/test_datastructures.py::test_formdata", "FormData multi-dict", do
+    let upload ← UploadFile.new "data".toUTF8 (filename := some "file") (size := some 4)
+    let form : FormData := { multiItems := [("a", .text "123"), ("a", .text "456"), ("b", .file upload)] }
+    let texts (vs : List FormValue) := vs.map fun v => v.text?
+    let up ← upload.repr
+    ok (form.contains "a" && !form.contains "A" && !form.contains "c" &&
+      (form["a"]?.bind (·.text?)) == some "456" && (form.get? "nope").isNone &&
+      texts (form.getlist "a") == [some "123", some "456"] && form.keys == ["a", "b"] &&
+      texts form.values == [some "456", none] && (form.items.map (·.1)) == ["a", "b"] &&
+      form.length == 2 &&
+      (← form.repr) == "FormData([('a', '123'), ('a', '456'), ('b', " ++ up ++ ")])")⟩,
+  ⟨"starlette FormData.close / UploadFile.close", "closing a form closes its uploads; a closed upload raises", do
+    let f1 ← UploadFile.new "x".toUTF8
+    let f2 ← UploadFile.new "y".toUTF8
+    let form : FormData := { multiItems := [("a", .file f1), ("t", .text "v"), ("b", .file f2)] }
+    form.close
+    let raised ← try discard f1.read; pure false catch _ => pure true
+    ok ((← f1.isClosed) && (← f2.isClosed) && raised)⟩,
+  ⟨"tests/test_formparsers.py (form cleanup)", "a form over a limit opens no upload and is a 400", do
+    let body := recipeBody "mpFiles" 1001
+    let r ← TestClient.request (formApp "plain" {}) "POST" "/" [("content-type", "multipart/form-data; boundary=B")] body
+    ok (r.status_code == 400 && r.text == "Too many files. Maximum number of files is 1000.")⟩
+]
+
+/-! ### Slow uploads over TCP -/
+
+open Std.Async Std.Async.TCP in
+/-- Send `pieces` to `127.0.0.1:port`, pausing `pauseMs` after each, and read
+the response until the server closes; with `hold`, keep the connection open
+after the last piece (a stalled client). Returns the response and the time
+from connecting to the close. -/
+def sendSlow (port : Nat) (pieces : List ByteArray) (pauseMs : UInt32) (hold : Bool := false) :
+    IO (String × Nat) := do
+  let t0 ← IO.monoMsNow
+  let res ← Async.block do
+    let c ← (Socket.Client.mk : IO Socket.Client)
+    c.connect (.v4 ⟨(Std.Net.IPv4Addr.ofString "127.0.0.1").get!, port.toUInt16⟩)
+    background do
+      for p in pieces do
+        try c.sendAll #[p] catch _ => pure ()
+        (IO.sleep pauseMs : IO Unit)
+      if hold then (IO.sleep 20000 : IO Unit)
+    let rec loop (acc : ByteArray) : Nat → Async ByteArray
+      | 0 => pure acc
+      | n + 1 => do
+        match ← (try c.recv? 65536 catch _ => pure none) with
+        | some d => if d.size == 0 then pure acc else loop (acc ++ d) n
+        | none => pure acc
+    loop .empty 100000
+  return ((String.fromUTF8? res).getD "", (← IO.monoMsNow) - t0)
+
+def formPort : Nat := 18732
+def stallPort : Nat := 18733
+
+def postHead (ct : String) (len : Nat) : ByteArray :=
+  s!"POST / HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Type: {ct}\r\nContent-Length: {len}\r\n\r\n".toUTF8
+
+def slowUploadCases : List Case := [
+  ⟨"uvicorn+starlette: a slow multipart upload (3 pieces, 300 ms apart) is served [socket]", "slow upload", do
+    let body := formPart "a" "1".toUTF8 ++ formPart "f" "<file content>".toUTF8 (some "f.txt") ++ "--B--\r\n".toUTF8
+    let third := body.size / 3
+    let pieces := [postHead "multipart/form-data; boundary=B" body.size ++ body.extract 0 third,
+      body.extract third (2 * third), body.extract (2 * third) body.size]
+    let (out, ms) ← sendSlow formPort pieces 300
+    ok (statusIs out "200" && out.endsWith
+      "{\"a\":\"1\",\"f\":{\"filename\":\"f.txt\",\"size\":14,\"content\":\"<file content>\",\"content_type\":null}}" &&
+      ms ≥ 600 && ms ≤ 5000)⟩,
+  ⟨"transport.limits (uvicorn: waits): a body that stalls past lingeringTimeout closes the connection [socket]", "stalled upload", do
+    let (out, ms) ← sendSlow stallPort [postHead "application/x-www-form-urlencoded" 100 ++ "a=1&b=".toUTF8] 50 (hold := true)
+    IO.println s!"      closed after {ms} ms: {(out.splitOn "\r\n").headD ""}"
+    ok (ms ≤ 4000 && !statusIs out "200")⟩
+]
+
+/-- Cases whose time is lean-multipart's urlencoded machine stepping byte by
+byte through a field over 1 MiB (about 65 ms; Starlette 3 to 9 ms). Requested
+from lean-multipart (note on 2z9q5ypdqzv5); until it lands they are bounded at
+150 ms, and the 3x bound applies to every other case. -/
+def formSlowCases : List String := [
+  "test_urlencoded_field_exceeds_max_part_size_raise",
+  "test_urlencoded_field_name_exceeds_max_part_size_raise",
+  "hostile: a 20 MB urlencoded value"]
+
+def formGoldenCase (line : Json) : Option Case := do
+  let name ← (line.getObjVal? "name").bind Json.getStr?
+  let kind ← (line.getObjVal? "kind").bind Json.getStr?
+  let lim : LeanMultipart.FormLimits := match line.getObjVal? "limits" with
+    | some l => {
+        maxFiles := ((l.getObjVal? "max_files").bind Json.getInt?).map Int.toNat |>.getD 1000,
+        maxFields := ((l.getObjVal? "max_fields").bind Json.getInt?).map Int.toNat |>.getD 1000,
+        maxPartSize := ((l.getObjVal? "max_part_size").bind Json.getInt?).map Int.toNat |>.getD (1024 * 1024) }
+    | none => {}
+  let ct := (line.getObjVal? "content_type").bind Json.getStr?
+  let body := match line.getObjVal? "body" with
+    | some (.str s) => latin1Bytes s
+    | some r => recipeBody (((r.getObjVal? "kind").bind Json.getStr?).getD "")
+        ((((r.getObjVal? "n").bind Json.getInt?).map Int.toNat).getD 0)
+    | none => .empty
+  let status ← (line.getObjVal? "status").bind Json.getInt?
+  let content ← (line.getObjVal? "content").bind Json.getStr?
+  let bound := if formSlowCases.contains name then 150 else match line.getObjVal? "upstream_ms" with
+    | some j => match (LeanJson.to_json j).val.toList.takeWhile (· != 46) with
+      | ds => max 20 (3 * (String.fromUTF8! (ByteArray.mk ds.toArray)).toNat! + 3)
+    | none => 20
+  pure ⟨s!"tests/test_formparsers.py (golden, Starlette 1.8.0)", s!"form: {name}", do
+    let headers := match ct with | some c => [("content-type", c)] | none => []
+    let t0 ← IO.monoMsNow
+    let r ← TestClient.request (formApp kind lim) "POST" "/" headers body
+    let ms := (← IO.monoMsNow) - t0
+    let good := r.status_code == status.toNat && r.text == content && ms ≤ bound
+    unless good do
+      IO.println s!"      got {r.status_code} in {ms} ms (bound {bound}) {(String.ofList (r.text.toList.take 300)).quote}"
+      IO.println s!"      want {status} {(String.ofList (content.toList.take 300)).quote}"
+    ok good⟩
+
+def formGoldenCases : IO (List Case) := do
+  let lines ← IO.FS.lines "tests/golden/forms-starlette-1.8.0.jsonl"
+  return lines.toList.filterMap fun l => (from_json l).toOption.bind fun j => formGoldenCase j.val
+
 /-! ## Bench bounds (CI), at about twice upstream's time
 
 Upstream times measured on Starlette 1.8.0 / CPython 3.13 by the critic. -/
@@ -937,9 +1146,12 @@ def main : IO UInt32 := do
   let golden ← goldenCases
   let filesGolden ← filesGoldenCases
   let filesBehaviour := filesBehaviourCases (← makeFixture)
+  let formGolden ← formGoldenCases
   let _ ← IO.asTask (socketApp.run (port := socketPort)) .dedicated
+  let _ ← IO.asTask ((formApp "plain" {}).run (port := formPort)) .dedicated
+  let _ ← IO.asTask ((formApp "plain" {}).run (port := stallPort) (config := { lingeringTimeout := 1000 })) .dedicated
   IO.sleep 1500
-  let cases := cases ++ golden ++ filesGolden ++ filesBehaviour ++ socketCases
+  let cases := cases ++ golden ++ filesGolden ++ filesBehaviour ++ formGolden ++ formDataCases ++ socketCases ++ slowUploadCases
   for c in cases do
     let ok ← try c.run catch e => do IO.println s!"      {e}"; pure false
     IO.println s!"{if ok then "ok  " else "FAIL"}  {c.name}  [{c.upstream}]"

@@ -87,6 +87,18 @@ Listed here with the reason, and in `docs/traceability.toml` with
   acts on (ranges, ETags, 304, the path under the static root) are pure, in
   `Range.lean`, `Files.lean` and `HttpDate.lean`.
 
+* **Forms.** The parse is proved (`Proofs/Forms.lean`): `request.form()`
+  decodes the raw form lean-multipart's Starlette parser returns, refined by
+  its `UrlencodedWithinLimits` / `MultipartWithinLimits`; the decoded items
+  meet `max_files` and `max_fields`; a rejection is `HTTPException(400)`.
+  Tested, not proved: the decoding itself (charsets, `unquote_plus`) and
+  `FormData` / `UploadFile` (`RepoImpl/Upload.lean`, effectful: an upload's
+  position and closed flag are an `IO.Ref`), by golden replay from Starlette
+  1.8.0 (`tests/golden/forms-starlette-1.8.0.jsonl`, 53 requests, hostile ones
+  included), the upstream datastructure tests (`formDataCases`) and
+  properties (`FormData` get/getlist/keys, urlencoded round trip, the field
+  limit).
+
 * **File I/O** (`RepoImpl/FileIO.lean`): reading in 64 KiB chunks, ranges
   and multipart bodies, `stat`, and the symbolic-link check (`realPath` of
   the file under the directory's, unless `follow_symlink`) are tested, not
@@ -153,6 +165,15 @@ Each has a `status = "deviation"` row in `docs/traceability.toml`.
     request line is rewritten;
   * a head not complete within `config.headerTimeout` is `408`.
   Pass a `Std.Http.Config` to tighten the rest.
+* **Uploads stay in memory**: lean-multipart parses a part into a
+  `ByteArray`, so an `UploadFile` never spools to disk (upstream's
+  `SpooledTemporaryFile` rolls over at 1 MiB). The body is bounded by
+  `max_body_size` (64 MiB by default).
+* **Form charsets**: UTF-8 (any spelling Python accepts) and latin-1/ASCII
+  are decoded; any other charset Python knows is decoded as latin-1, as an
+  unknown one is upstream (row `forms.charset`).
+* **A stalled request body** (no byte for `config.lingeringTimeout`, 10 s by
+  default) is `408`; uvicorn waits.
 * **Numbers from request input** follow CPython's `int()` digit limit
   (`sys.int_max_str_digits`, 4300; leading zeros count): a longer `Range`
   bound is upstream's `ValueError` (the part is ignored), a longer date field
@@ -167,6 +188,17 @@ Path matching runs on Keel.Route, linear in the path since Keel d7ff26d:
 65000-character paths that do not match take 5 to 13 ms (conformance
 `benchCases`, bound 50 ms; upstream 20 ms). Before, a capture followed by a
 literal cost O(n²) (75 s at 65000 characters).
+
+### Large uploads
+
+`Std.Http`'s reader copies the unconsumed input on every receive, so a body
+it reads itself costs O(n²) (20 MB 5.5 s, 40 MB 18 s). The transport reads a
+`Content-Length` body itself first (`readBody`: reads of up to 64 KiB, kept
+apart and joined once), then hands `Std.Http` the whole request. Measured by
+`scripts/bench.sh` (CI runs it; each case has a time and a peak-memory
+bound, the peak including ~220 MB the bench holds): 50 MB upload 0.4 to 0.7 s;
+200k urlencoded fields rejected in 26 ms; 50k multipart fields in 47 ms; a
+20 MiB value over `max_part_size` in 0.2 to 0.3 s.
 
 ### Large JSON bodies
 

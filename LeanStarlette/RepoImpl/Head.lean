@@ -96,6 +96,38 @@ def rewriteHead (buf : ByteArray) : HeadAction :=
         .forward (ByteArray.mk newLine.toArray ++ buf.extract eol buf.size)
     | _ => .forward buf
 
+/-- The header lines of a head (after the request line, before the blank
+line), split on CRLF in one pass. -/
+def headerLines (head : ByteArray) (e : Nat) : List (List UInt8) :=
+  let body := (head.extract 0 e).toList
+  let (cur, done) := body.foldl (init := (([] : List UInt8), ([] : List (List UInt8))))
+    fun (cur, done) b => if b == 10 then ([], cur.reverse :: done) else (b :: cur, done)
+  let lines := (cur.reverse :: done).reverse.map fun l => if l.getLast? == some 13 then l.dropLast else l
+  (lines.drop 1).filter (!·.isEmpty)
+
+/-- A header line's name, ASCII lower-cased, and its value without
+surrounding spaces and tabs. -/
+def splitHeaderLine (l : List UInt8) : List UInt8 × List UInt8 :=
+  let name := l.takeWhile (· != 58)
+  let lower := name.map fun b => if 65 ≤ b && b ≤ 90 then b + 32 else b
+  let isWs (b : UInt8) := b == 32 || b == 9
+  let value := ((l.drop (name.length + 1)).dropWhile isWs).reverse.dropWhile isWs |>.reverse
+  (lower, value)
+
+/-- For a head whose body is framed by one plain `Content-Length` (exactly one
+such header, 1 to 19 digits, and no `Transfer-Encoding`): the index just past
+the head and the body length. Anything else is left to `Std.Http`, which
+rejects what it must. -/
+def plainBodyLength (head : ByteArray) : Option (Nat × Nat) := do
+  let e ← findHeadEnd head 0
+  let hs := (headerLines head e).map splitHeaderLine
+  if hs.any (·.1 == "transfer-encoding".toUTF8.toList) then none
+  match hs.filter (·.1 == "content-length".toUTF8.toList) with
+  | [(_, v)] =>
+    if v.isEmpty || v.length > 19 || !v.all (fun b => 48 ≤ b && b ≤ 57) then none
+    else some (e, v.foldl (fun n b => n * 10 + (b - 48).toNat) 0)
+  | _ => none
+
 /-- The bytes of a response the transport writes itself. -/
 def rawResponse (status : Nat) (reason body : String) : ByteArray :=
   (s!"HTTP/1.1 {status} {reason}\r\ncontent-type: text/plain; charset=utf-8\r\nconnection: close\r\n" ++

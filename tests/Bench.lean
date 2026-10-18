@@ -100,7 +100,133 @@ def fileBench (mb : Nat) : IO Unit := do
   IO.FS.removeDirAll dir
   IO.Process.exit 0
 
+/-- lean-multipart's Starlette parsers alone, on the bodies the form limits stop. -/
+def formParse : IO Unit := do
+  let big := ByteArray.mk (Array.replicate (1024 * 1024 + 1) 120)
+  let lim : LeanMultipart.FormLimits := {}
+  for (label, body, ct) in [("urlencoded a=<1 MiB + 1>", "a=".toUTF8 ++ big, none),
+      ("urlencoded <1 MiB + 1>=1", big ++ "=1".toUTF8, none),
+      ("urlencoded 200k fields", (String.intercalate "&" (List.replicate 200000 "a=1")).toUTF8, none),
+      ("multipart <1 MiB + 1> text part", "--B\r\nContent-Disposition: form-data; name=\"f\"\r\n\r\n".toUTF8 ++ big ++ "\r\n--B--\r\n".toUTF8, some "multipart/form-data; boundary=B")] do
+    let t0 ← IO.monoNanosNow
+    let r : Except LeanMultipart.LimitError Nat := match ct with
+      | none => (LeanMultipart.API.Starlette.parseUrlencoded lim body).map fun (fs : {fs : List LeanMultipart.QsField // _}) => fs.val.length
+      | some c => (LeanMultipart.API.Starlette.parseMultipartForm lim c.toUTF8 body).map fun (ps : {ps : List LeanMultipart.StarlettePart // _}) => ps.val.length
+    let t1 ← IO.monoNanosNow
+    IO.println s!"{label}: {match r with | .ok n => s!"ok {n}" | .error e => s!"error {repr e}"} in {(t1 - t0) / 1000} µs"
+
+/-- Peak resident memory of this process, in KB (`VmHWM`). -/
+def peakKB : IO Nat := do
+  let s ← IO.FS.readFile "/proc/self/status"
+  for line in s.splitOn "\n" do
+    if line.startsWith "VmHWM:" then
+      return ((line.drop 6).trimAscii.toString.takeWhile Char.isDigit).toNat!
+  return 0
+
+def mib : Nat := 1024 * 1024
+
+/-- `n` bytes of `x`, built in place (no boxed array on the way). -/
+def xBytes (n : Nat) : ByteArray := Id.run do
+  let mut b := ByteArray.emptyWithCapacity n
+  for _ in [0:n] do b := b.push 120
+  return b
+
+def mpPart (name : String) (value : ByteArray) (filename : Option String := none) : ByteArray :=
+  let disp := s!"form-data; name=\"{name}\"" ++ (filename.map (s!"; filename=\"{·}\"")).getD ""
+  s!"--B\r\nContent-Disposition: {disp}\r\n\r\n".toUTF8 ++ value ++ "\r\n".toUTF8
+
+def repeatB (b : ByteArray) (n : Nat) : ByteArray := Id.run do
+  let mut out := ByteArray.emptyWithCapacity (b.size * n)
+  for _ in [0:n] do out := out ++ b
+  return out
+
+/-- Hostile form bodies, end to end over TCP (an in-process server, curl
+uploading from a file): each is `(name, content type, body, expected status,
+time bound ms, peak bound MB)`. The peak is the server process's, and includes
+the body as the server holds it and the ~220 MB the bench itself holds (the
+bodies are built in process). Bounds leave CI runners about 2x headroom. -/
+def formCases : List (String × String × (Unit → ByteArray) × String × Nat × Nat) := [
+  ("url200k", "application/x-www-form-urlencoded",
+    fun _ => "a=1".toUTF8 ++ repeatB "&a=1".toUTF8 199999, "400", 200, 150),
+  ("urlValue20m", "application/x-www-form-urlencoded",
+    fun _ => "a=".toUTF8 ++ xBytes (20 * mib), "400", 800, 300),
+  ("mpValue20m", "multipart/form-data; boundary=B",
+    fun _ => mpPart "f" (xBytes (20 * mib)) ++ "--B--\r\n".toUTF8, "400", 800, 300),
+  ("mpFields50k", "multipart/form-data; boundary=B",
+    fun _ => repeatB (mpPart "f" "v".toUTF8) 50000 ++ "--B--\r\n".toUTF8, "400", 300, 150),
+  ("mpFile50m", "multipart/form-data; boundary=B",
+    fun _ => mpPart "f" (xBytes (50 * mib)) (some "big.bin") ++ "--B--\r\n".toUTF8, "200", 2000, 700)]
+
+def formSizeApp : Application := Starlette (routes := [Route "/" (fun (r : Request) => do
+    let data ← r.form
+    let mut n := 0
+    for (_, v) in data.multi_items do
+      if let .file f := v then n := n + (← (f.read : IO ByteArray)).size
+    return PlainTextResponse (toString n) : Request → AppM Response) (methods := ["POST"])])
+
+def nullApp : Application := Starlette (routes := [Route "/" (fun (r : Request) =>
+    PlainTextResponse (toString r.bodyBytes.size)) (methods := ["POST"])])
+
+/-- One hostile form case; exits 1 when a bound is exceeded. `name!` runs the
+same body through an app that ignores it (the transport's share). -/
+def formMem (name0 : String) : IO UInt32 := do
+  let null := name0.endsWith "!"
+  let name := if null then (name0.dropEnd 1).toString else name0
+  let some (_, ct, mk, want, msBound, mbBound) := formCases.find? (·.1 == name)
+    | IO.println s!"unknown case {name}"; return 2
+  let dir ← IO.FS.createTempDir
+  let path := dir / "body.bin"
+  let size ← do
+    let body := mk ()
+    IO.FS.writeBinFile path body
+    pure body.size
+  let port : Nat := 18751
+  let _ ← IO.asTask ((if null then nullApp else formSizeApp).run (port := port)) .dedicated
+  IO.sleep 300
+  let base ← peakKB
+  let t0 ← IO.monoMsNow
+  let res ← IO.Process.output { cmd := "curl", args := #["-s", "-i", "-X", "POST", "-H", s!"content-type: {ct}", "-H", "Expect:",
+    "--data-binary", s!"@{path}", s!"http://127.0.0.1:{port}/"] }
+  let ms := (← IO.monoMsNow) - t0
+  IO.FS.removeDirAll dir
+  let out := res.stdout.toUTF8
+  let body : ByteArray := .empty
+  let _ := body
+  let peak ← peakKB
+  let text := (String.fromUTF8? out).getD ""
+  let status := ((text.splitOn " ").getD 1 "")
+  IO.println s!"RESULT {name} size={size} status={status} ms={ms} peakMB={peak / 1024} (before the request {base / 1024} MB; bounds {msBound} ms, {mbBound} MB)"
+  let mut ok := true
+  if status != want then IO.println s!"  FAIL status {status}, want {want}"; ok := false
+  if ms > msBound then IO.println s!"  FAIL time {ms} ms > {msBound} ms"; ok := false
+  if peak > mbBound * 1024 then IO.println s!"  FAIL memory {peak / 1024} MB > {mbBound} MB"; ok := false
+  return if ok then 0 else 1
+
+/-- Plain `Std.Http.Server.serve` reading a POST body with `readAll`: the
+toolchain's own upload speed, for comparison with `Application.run`. -/
+def plainUpload (mb : Nat) : IO Unit := do
+  let dir ← IO.FS.createTempDir
+  let path := dir / "body.bin"
+  IO.FS.writeBinFile path (xBytes (mb * mib))
+  let handler : Std.Http.Server.StatelessHandler := Std.Http.Server.Handler.ofFn fun req => do
+    let body : ByteArray ← req.body.readAll
+    toHttpResponse (PlainTextResponse (toString body.size))
+  let addr : Std.Net.SocketAddress := .v4 ⟨(Std.Net.IPv4Addr.ofString "127.0.0.1").get!, 18752⟩
+  let _ ← IO.asTask (Std.Async.Async.block do
+    let _ ← Std.Http.Server.serve addr handler
+    Std.Async.sleep 600000) .dedicated
+  IO.sleep 300
+  let t0 ← IO.monoMsNow
+  let res ← IO.Process.output { cmd := "curl", args := #["-s", "-X", "POST", "-H", "Expect:",
+    "--data-binary", s!"@{path}", "http://127.0.0.1:18752/"] }
+  IO.println s!"plain Std.Http, {mb} MB upload: {res.stdout} in {(← IO.monoMsNow) - t0} ms"
+  IO.FS.removeDirAll dir
+  IO.Process.exit 0
+
 def main (args : List String) : IO Unit := do
+  if args.headD "" == "plainupload" then plainUpload ((args.getD 1 "20").toNat!)
+  if args.headD "" == "formmem" then IO.Process.exit (← formMem (args.getD 1 "")).toUInt8
+  if args.headD "" == "formparse" then formParse; return
   if args.headD "" == "file" then fileBench ((args.getD 1 "100").toNat!)
   if args.headD "" == "paths" then paths; return
   if args.headD "" == "digits" then digits; return

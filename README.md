@@ -85,7 +85,8 @@ instantiated for Starlette's `Route`, `Mount` and `Router`:
 | Background tasks run in the order they were added | `background_run_order_io : (bt.addTask t).run = (do bt.run; t)`, `background_run_order` (every lawful monad), `run_order_trace` |
 | A printed `Range` header parses back to its ranges; every parsed range lies inside the file | `range_parse_print`, `range_within` |
 | A static file is 304 exactly when `If-None-Match` lists its ETag (or `*`), else when `If-Modified-Since` is no earlier than `Last-Modified` | `etag_304_iff`, `date_304_iff`, `static_304_iff` |
-| A served static path is the directory followed by plain entry names (no `..`, `.`, `/`, `\`, NUL) | `served_path_inside` |
+| A served static path is the directory followed by plain entry names (no `..`, `.`, `/`, NUL; on Windows no `\`) | `served_path_inside` |
+| `request.form()` is lean-multipart's Starlette parse, decoded; an accepted form meets `max_files`, `max_fields` and `max_part_size`; a rejected one is a 400 with Starlette's message | `form_parse_agrees`, `form_limits_enforced`, `form_error_400` |
 
 Every one has a slot in `LeanStarlette/Proofs/Verified.lean`. What is
 tested rather than proved, and every deviation from upstream, is listed in
@@ -121,7 +122,9 @@ the exception and server-error middleware, and the `Std.Http` transport.
 Milestone 6: `StreamingResponse`, `BackgroundTasks`, `FileResponse` with
 `Range`/`If-Range`/ETag, `StaticFiles` with `html` mode and 304 (files are
 sent in 64 KiB chunks: a 400 MB file peaks at 86 MB resident, as a 20 MB one
-does). Middleware, cookies, forms, WebSockets, `Host`, lifespan and the
+does). Milestone 4: `request.form()` with `max_files`, `max_fields`,
+`max_part_size`, `FormData` and `UploadFile`, over lean-multipart.
+Middleware, cookies, WebSockets, `Host`, lifespan and the
 httpx-based `TestClient` follow in later milestones.
 
 ## License

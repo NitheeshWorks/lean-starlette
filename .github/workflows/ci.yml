@@ -29,6 +29,8 @@ jobs:
         run: lake exe conformance
       - name: Traceability
         run: python3 scripts/traceability-check.py
+      - name: Hostile form uploads (time and memory bounds)
+        run: scripts/bench.sh
 
   plausible:
     runs-on: ubuntu-latest

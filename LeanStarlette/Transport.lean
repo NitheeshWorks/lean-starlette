@@ -187,6 +187,37 @@ def readHead [Transport t] (c : t) (deadline : Std.Async.Selector Unit) (buf : B
     | none => readHead c deadline buf' (budget - min budget chunk.size)
 termination_by budget
 
+/-- How reading a body ended: the chunks read, in order. -/
+inductive BodyRead where
+  | complete (chunks : Array ByteArray)
+  | eof (chunks : Array ByteArray)
+  | timeout
+
+/-- Read until `got + (bytes read)` reaches `need`, each read within `timeout`
+(as `Std.Http`'s `lingeringTimeout`). Reads ask for at most what is still
+missing, so nothing past the body is taken. The chunks are kept apart and
+joined once by the caller: appending to one buffer inside `Async` copies it
+on every read. Each step reads at least one byte. -/
+def readBody [Transport t] (c : t) (timeout : Std.Time.Millisecond.Offset) (acc : Array ByteArray)
+    (got need : Nat) : Async BodyRead := do
+  if hn : need ≤ got then return .complete acc else
+  let deadline ← Std.Async.Selector.sleep timeout
+  let r ← Selectable.one #[
+    .case (Transport.recvSelector c (min 65536 (need - got)).toUInt64) (fun x => pure (some x)),
+    .case deadline (fun _ => pure none)]
+  match r with
+  | none => return .timeout
+  | some none => return .eof acc
+  | some (some chunk) =>
+    if hc : chunk.size = 0 then return .eof acc else
+    have : need - (got + chunk.size) < need - got := by omega
+    readBody c timeout (acc.push chunk) (got + chunk.size) need
+termination_by need - got
+
+/-- Join chunks into one buffer of the right capacity, copying each once. -/
+def joinChunks (first : ByteArray) (chunks : Array ByteArray) : ByteArray :=
+  chunks.foldl (· ++ ·) (ByteArray.emptyWithCapacity (first.size + chunks.foldl (· + ·.size) 0) ++ first)
+
 /-- The configuration the transport hands `Std.Http`: uvicorn-like limits
 (no header count limit beyond the head size; long header values), and no
 keep-alive. -/
@@ -220,10 +251,28 @@ def serveOne [Transport t] (a : Application) (conn : t) (config : Std.Http.Confi
       Transport.sendAll conn #[rawResponse code reason body]
       Transport.close conn; shutdown
     | .forward bytes =>
-      let handled ← IO.mkRef false
-      let replay : Replay t := ⟨conn, ← IO.mkRef (some bytes), ← IO.mkRef false, handled⟩
-      Std.Http.Server.serveConnection replay (a.toHandler handled client) (transportConfig config) extensions |>.run
-      shutdown
+      -- A body framed by a plain Content-Length is read here, whole, and handed
+      -- to Std.Http with the head in one piece: Std.Http's reader copies its
+      -- unconsumed input on every receive, which is quadratic in a body that
+      -- arrives in many reads (20 MB: 5.5 s; in one piece: linear).
+      let bytes ← match plainBodyLength bytes with
+        | some (e, len) =>
+          if len ≤ config.maxBodySize then
+            match ← readBody conn config.lingeringTimeout #[] bytes.size (e + len) with
+            | .complete cs => pure (some (joinChunks bytes cs))
+            | .eof cs => pure (some (joinChunks bytes cs))
+            | .timeout => pure none
+          else pure (some bytes)
+        | none => pure (some bytes)
+      match bytes with
+      | none =>
+        Transport.sendAll conn #[rawResponse 408 "Request Timeout" "Request Timeout"]
+        Transport.close conn; shutdown
+      | some bytes =>
+        let handled ← IO.mkRef false
+        let replay : Replay t := ⟨conn, ← IO.mkRef (some bytes), ← IO.mkRef false, handled⟩
+        Std.Http.Server.serveConnection replay (a.toHandler handled client) (transportConfig config) extensions |>.run
+        shutdown
 
 /-! ## The server -/
 

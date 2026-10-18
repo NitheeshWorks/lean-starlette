@@ -1,4 +1,5 @@
 import LeanStarlette.APIs.Starlette
+import LeanStarlette.APIs.Forms
 
 /-!
 # Specifications: what the router and the responses promise
@@ -131,5 +132,28 @@ def ServedPathInside : Prop :=
       ∀ s ∈ segs, s.isEmpty = false ∧ s ≠ "." ∧ s ≠ ".." ∧
         s.contains '/' = false ∧ (System.Platform.isWindows && s.contains '\\') = false ∧
         s.contains '\x00' = false
+
+/-- Form parse agrees with lean-multipart: the items `request.form()` builds
+on are the decoding of the raw form lean-multipart's Starlette parser
+returned (refined by its `UrlencodedWithinLimits` / `MultipartWithinLimits`). -/
+def FormParseAgrees : Prop :=
+  ∀ (lim : LeanMultipart.FormLimits) (ct : Option String) (body : ByteArray) (items : List (String × FormItem)),
+    formItems lim ct body = .ok items →
+      ∃ r, parseRawForm lim ct body = .ok r ∧ items = r.val.decode
+
+/-- Limits enforced: an accepted form has at most `max_files` files and
+`max_fields` text fields, and its raw parts meet lean-multipart's limits
+(each text part within `max_part_size`). -/
+def FormLimitsEnforced : Prop :=
+  ∀ (lim : LeanMultipart.FormLimits) (ct : Option String) (body : ByteArray) (items : List (String × FormItem)),
+    formItems lim ct body = .ok items →
+      FormItemsWithinLimits lim items ∧ ∃ r : RawForm, r.WithinLimits lim ∧ items = r.decode
+
+/-- A rejected form is `HTTPException(400)` with Starlette's message. -/
+def FormError400 : Prop :=
+  ∀ (r : Request) (max_files max_fields max_part_size : Nat) (e : LeanMultipart.LimitError),
+    formItems { maxFiles := max_files, maxFields := max_fields, maxPartSize := max_part_size }
+      (r.headers.get? "content-type") r.bodyBytes = .error e →
+    r.form max_files max_fields max_part_size = throw (HTTPException 400 (detail := some (formErrorMessage e)))
 
 end LeanStarlette.Spec

@@ -219,7 +219,8 @@ def isNormalName (s : String) : Bool :=
 
 /-- Resolve `.` and `..` in a route path, refusing a path that climbs above
 the directory (upstream normalises and then rejects it with `commonpath`;
-both answer 404). A segment with a backslash or NUL is refused too. -/
+both answer 404). A segment with NUL is refused too, and on Windows one with
+a backslash (a separator there; on POSIX it is a name character, as upstream). -/
 def staticSegments (routePath : String) : Option (List String) :=
   go [] (routePath.splitOn "/")
 where
