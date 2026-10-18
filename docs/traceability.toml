@@ -290,7 +290,7 @@ upstream = "tests/test_background.py::test_multiple_tasks"
 title = "BackgroundTasks run in order after the response; a failing task skips the rest"
 status = "implemented"
 realises = ["LeanStarlette.BackgroundTasks.run", "LeanStarlette.BackgroundTasks.runAll", "LeanStarlette.BackgroundTasks.addTask", "LeanStarlette.BackgroundTask"]
-theorem = ["LeanStarlette.BackgroundTasks.background_run_order", "LeanStarlette.BackgroundTasks.run_order_trace", "LeanStarlette.BackgroundTasks.runAll_cons"]
+theorem = ["LeanStarlette.BackgroundTasks.background_run_order_io", "LeanStarlette.BackgroundTasks.background_run_order", "LeanStarlette.BackgroundTasks.run_order_trace", "LeanStarlette.BackgroundTasks.runAll_cons"]
 test = ["tests/Conformance.lean::filesBehaviourCases", "tests/golden/files-starlette-1.8.0.jsonl"]
 
 [[requirement]]
@@ -322,15 +322,15 @@ test = ["tests/Conformance.lean::filesBehaviourCases", "tests/golden/files-starl
 [[requirement]]
 id = "staticfiles.etag"
 upstream = "starlette/responses.py:FileResponse.set_stat_headers"
-title = "ETag value: opaque mtime-size pair instead of upstream's MD5 of it"
-status = "deviation"
-realises = ["LeanStarlette.fileETag"]
-test = ["tests/Conformance.lean::filesBehaviourCases"]
+title = "ETag as upstream: md5 of repr(st_mtime) + '-' + st_size (CPython's double st_mtime and shortest repr; lean-httpx Hash.md5), compared byte for byte"
+status = "tested"
+realises = ["LeanStarlette.fileETag", "LeanStarlette.pyFloatRepr", "LeanStarlette.stMtime"]
+test = ["tests/golden/files-starlette-1.8.0.jsonl", "tests/Conformance.lean::filesBehaviourCases"]
 
 [[requirement]]
 id = "staticfiles.paths"
 upstream = "tests/test_staticfiles.py::test_staticfiles_prevents_breaking_out_of_directory"
-title = "A served path stays inside the directory: segments are plain names, climbing above the root is a 404; symbolic links checked with realPath unless follow_symlink"
+title = "A served path stays inside the directory: segments are plain names, climbing above the root is a 404; a backslash is a name character on POSIX (as upstream), a separator on Windows; symbolic links checked with realPath unless follow_symlink"
 status = "implemented"
 realises = ["LeanStarlette.staticSegments", "LeanStarlette.joinUnder", "LeanStarlette.lookupStatic", "LeanStarlette.isUnder"]
 theorem = ["LeanStarlette.served_path_inside", "LeanStarlette.staticSegments_normal"]

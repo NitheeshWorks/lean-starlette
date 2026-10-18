@@ -789,15 +789,21 @@ def benchCases : List Case := [
 /-! ## Files, static files, streaming, background tasks: golden from Starlette 1.8.0
 
 `tests/golden/record_files.py` records `tests/golden/files-starlette-1.8.0.jsonl`
-over the fixture below (every mtime 1700000000). The ETag value is not compared
-(see CONTRIBUTING.md); a multipart boundary is compared as `*`. -/
+over the fixture below (every mtime 1700000000 s, frac.txt 1700000000.123456789 s).
+The ETag is compared byte for byte; a multipart boundary is compared as `*`. -/
 
 def filesFixture : List (String × String) := [
   ("static/example.txt", "0123456789abcdefghij"),
   ("static/index.html", "<h1>Index</h1>"),
   ("static/sub/index.html", "<h1>Sub</h1>"),
   ("static/404.html", "<h1>Custom 404</h1>"),
-  ("secret.txt", "secret")]
+  ("secret.txt", "secret"),
+  ("static/frac.txt", "fractional mtime"),
+  ("static/x\\y.txt", "backslash name")]
+
+/-- The mtime `touch -d` sets for a fixture file. -/
+def fixtureMtime (rel : String) : String :=
+  if rel == "static/frac.txt" then "@1700000000.123456789" else "@1700000000"
 
 /-- Write the fixture under a fresh temporary directory; returns its path. -/
 def makeFixture : IO String := do
@@ -806,7 +812,7 @@ def makeFixture : IO String := do
     let p := root / rel
     if let some d := p.parent then IO.FS.createDirAll d
     IO.FS.writeFile p text
-    let _ ← IO.Process.output { cmd := "touch", args := #["-d", "@1700000000", p.toString] }
+    let _ ← IO.Process.output { cmd := "touch", args := #["-d", fixtureMtime rel, p.toString] }
   return root.toString
 
 /-- The app `tests/golden/record_files.py` records, in Lean. -/
@@ -832,7 +838,7 @@ def normHeader (k v : String) : String :=
   else v
 
 def filesKeep : List String :=
-  ["content-type", "content-length", "content-range", "accept-ranges", "last-modified", "location", "allow"]
+  ["content-type", "content-length", "content-range", "accept-ranges", "last-modified", "etag", "location", "allow"]
 
 def filesGoldenCase (app : Application) (line : Json) : Option Case := do
   let method ← (line.getObjVal? "method").bind Json.getStr?

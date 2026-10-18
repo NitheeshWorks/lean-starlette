@@ -82,7 +82,7 @@ instantiated for Starlette's `Route`, `Mount` and `Router`:
 | `content-length` is the size of the body sent | `content_length_eq_body` |
 | 1xx, 204 and 304 responses have no body | `no_body_204_304` (and the field `Response.h_body`) |
 | `JSONResponse`'s body parses back to the value; NaN is refused | `json_response_body`, `json_response_nonfinite` |
-| Background tasks run in the order they were added | `background_run_order : runAll (ts ++ [t]) = (do runAll ts; t)` in every lawful monad, `run_order_trace` |
+| Background tasks run in the order they were added | `background_run_order_io : (bt.addTask t).run = (do bt.run; t)`, `background_run_order` (every lawful monad), `run_order_trace` |
 | A printed `Range` header parses back to its ranges; every parsed range lies inside the file | `range_parse_print`, `range_within` |
 | A static file is 304 exactly when `If-None-Match` lists its ETag (or `*`), else when `If-Modified-Since` is no earlier than `Last-Modified` | `etag_304_iff`, `date_304_iff`, `static_304_iff` |
 | A served static path is the directory followed by plain entry names (no `..`, `.`, `/`, `\`, NUL) | `served_path_inside` |

@@ -1,6 +1,7 @@
 import LeanStarlette.RepoImpl.Responses
 import LeanStarlette.RepoImpl.Range
 import LeanStarlette.RepoImpl.HttpDate
+import LeanHttpx.RepoImpl.Hash
 
 /-!
 # RepoImpl: files and static files, the pure part
@@ -68,11 +69,48 @@ export Responses (FileResponse)
 def hexOf (n : Nat) : String :=
   String.ofList ((Nat.toDigits 16 n))
 
-/-- The `ETag` of a file: its modification time (ns) and size. Upstream
-hashes `f"{mtime}-{size}"` with MD5; the value is opaque to clients, so
-this port uses the pair itself (see `CONTRIBUTING.md`). -/
+/-- CPython's `repr(float)`: the shortest decimal that reads back as `x`
+(lean-json's `Number.ofFloat`), laid out as Python does: fixed notation when
+the decimal exponent is in `[-4, 16)` (`1700000000.0`, `0.0001`), else
+`1e+16`, `1.5e-07` (two exponent digits at least). -/
+def pyFloatRepr (x : Float) : String :=
+  match LeanJson.Number.ofFloat x with
+  | .float d =>
+    let sign := if d.neg then "-" else ""
+    if d.mant = 0 then sign ++ "0.0" else
+    let ds := Keel.Codec.decimal d.mant
+    let n := ds.length
+    let dp : Int := n + d.exp
+    let x10 := dp - 1
+    let zeros (k : Nat) : List Char := List.replicate k '0'
+    if -4 ≤ x10 ∧ x10 < 16 then
+      let body : List Char :=
+        if dp ≤ 0 then '0' :: '.' :: zeros dp.natAbs ++ ds
+        else if dp.toNat < n then ds.take dp.toNat ++ '.' :: ds.drop dp.toNat
+        else ds ++ zeros (dp.toNat - n) ++ ['.', '0']
+      sign ++ String.ofList body
+    else
+      let mant := match ds with
+        | c :: [] => [c]
+        | c :: rest => c :: '.' :: rest
+        | [] => []
+      let e := Keel.Codec.decimal x10.natAbs
+      let e := if e.length < 2 then '0' :: e else e
+      sign ++ String.ofList (mant ++ 'e' :: (if x10 < 0 then '-' else '+') :: e)
+  | .nan => "nan"
+  | .inf => "inf"
+  | .negInf => "-inf"
+  | .int i => toString i ++ ".0"
+
+/-- `os.stat(path).st_mtime` from the modification time in nanoseconds:
+CPython's `fill_time` computes `(double)sec + (double)nsec * 1e-9`. -/
+def stMtime (mtimeNs : Int) : Float :=
+  Float.ofInt (mtimeNs / 1000000000) + Float.ofNat (mtimeNs % 1000000000).toNat * 1e-9
+
+/-- The `ETag` of a file, as upstream computes it:
+`'"' + md5(f"{st_mtime}-{st_size}").hexdigest() + '"'`. -/
 def fileETag (size : Nat) (mtimeNs : Int) : String :=
-  "\"" ++ hexOf mtimeNs.toNat ++ "-" ++ hexOf size ++ "\""
+  "\"" ++ LeanHttpx.Hash.hex (LeanHttpx.Hash.md5 (pyFloatRepr (stMtime mtimeNs) ++ "-" ++ toString size).toUTF8) ++ "\""
 
 /-- `set_stat_headers`. -/
 def fileStatHeaders (h : Headers) (size : Nat) (mtimeNs : Int) : Headers :=
@@ -172,9 +210,12 @@ def staticFileResponse (path : String) (size : Nat) (mtimeNs : Int) (req : Heade
 /-! ## Static paths -/
 
 /-- A path segment that names an entry in a directory: not empty, `.` or
-`..`, and with no separator or NUL. -/
+`..`, and with no separator or NUL. A backslash is a separator only on
+Windows; on POSIX it is an ordinary file-name character, as upstream serves
+it there. -/
 def isNormalName (s : String) : Bool :=
-  !s.isEmpty && s != "." && s != ".." && !s.contains '/' && !s.contains '\\' && !s.contains '\x00'
+  !s.isEmpty && s != "." && s != ".." && !s.contains '/' &&
+    !(System.Platform.isWindows && s.contains '\\') && !s.contains '\x00'
 
 /-- Resolve `.` and `..` in a route path, refusing a path that climbs above
 the directory (upstream normalises and then rejects it with `commonpath`;

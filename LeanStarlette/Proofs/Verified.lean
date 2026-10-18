@@ -63,6 +63,7 @@ theorem theVerifiedHttp : VerifiedHttp where
 /-- Streaming, background tasks, files and static files (m6). -/
 structure VerifiedFiles where
   backgroundRunOrder : Spec.BackgroundRunOrder
+  backgroundRunOrderIO : Spec.BackgroundRunOrderIO
   rangeParsePrint : Spec.RangeParsePrint
   rangeWithin : Spec.RangeWithin
   etag304Iff : Spec.Etag304Iff
@@ -70,6 +71,7 @@ structure VerifiedFiles where
 
 theorem theVerifiedFiles : VerifiedFiles where
   backgroundRunOrder := BackgroundTasks.background_run_order
+  backgroundRunOrderIO := BackgroundTasks.background_run_order_io
   rangeParsePrint := range_parse_print
   rangeWithin := range_within
   etag304Iff := etag_304_iff

@@ -97,12 +97,15 @@ theorem joinUnder_eq (dir : String) (segs : List String) :
 
 /-- **A served path is inside the static directory**: the path `StaticFiles`
 opens for a request is the directory followed by `/name` components, each a
-plain entry name, so no component leaves the directory. (Symbolic links are
-checked at run time with `realPath`, unless `follow_symlink`.) -/
+plain entry name, so no component leaves the directory: no `/`, `.`, `..` or
+NUL, and on Windows no `\` (on POSIX a backslash is an ordinary file-name
+character, as upstream serves it). Symbolic links are checked at run time
+with `realPath`, unless `follow_symlink`. -/
 theorem served_path_inside (dir p : String) (segs : List String) (h : staticSegments p = some segs) :
     joinUnder dir segs = dir ++ String.join (segs.map ("/" ++ ·)) ∧
       ∀ s ∈ segs, s.isEmpty = false ∧ s ≠ "." ∧ s ≠ ".." ∧
-        s.contains '/' = false ∧ s.contains '\\' = false ∧ s.contains '\x00' = false := by
+        s.contains '/' = false ∧ (System.Platform.isWindows && s.contains '\\') = false ∧
+        s.contains '\x00' = false := by
   refine ⟨joinUnder_eq dir segs, fun s hs => ?_⟩
   have hn := staticSegments_normal p segs h s hs
   simp only [isNormalName, Bool.and_eq_true, Bool.not_eq_true', bne_iff_ne, ne_eq] at hn

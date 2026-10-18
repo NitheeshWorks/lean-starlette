@@ -6,9 +6,9 @@ Run from the workspace with the upstream-spec venv (not in CI):
     > lean-starlette/tests/golden/files-starlette-1.8.0.jsonl
 
 The directory fixture and the app mirror `filesFixture` and `filesApp` in
-tests/Conformance.lean; every file's mtime is set to 1700000000. The ETag is
-not compared (its value is opaque; see CONTRIBUTING.md), and a multipart
-boundary is replaced by `*`.
+tests/Conformance.lean; every file's mtime is set to 1700000000 s, except
+frac.txt at 1700000000.123456789 s. The ETag is compared byte for byte; a
+multipart boundary is replaced by `*`.
 """
 import json, os, tempfile
 from starlette.applications import Starlette
@@ -24,8 +24,10 @@ FILES = {
     "static/sub/index.html": "<h1>Sub</h1>",
     "static/404.html": "<h1>Custom 404</h1>",
     "secret.txt": "secret",
+    "static/frac.txt": "fractional mtime",
+    "static/x\\y.txt": "backslash name",
 }
-MTIME = 1700000000
+MTIME_NS = {"static/frac.txt": 1700000000123456789}
 
 root = tempfile.mkdtemp()
 for rel, text in FILES.items():
@@ -33,7 +35,8 @@ for rel, text in FILES.items():
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "w") as f:
         f.write(text)
-    os.utime(p, (MTIME, MTIME))
+    ns = MTIME_NS.get(rel, 1700000000 * 10**9)
+    os.utime(p, ns=(ns, ns))
 static = os.path.join(root, "static")
 
 log = []
@@ -61,7 +64,7 @@ app = Starlette(routes=[
 client = TestClient(app, raise_server_exceptions=False)
 
 LM = "Tue, 14 Nov 2023 22:13:20 GMT"
-KEEP = ["content-type", "content-length", "content-range", "accept-ranges", "last-modified", "location", "allow"]
+KEEP = ["content-type", "content-length", "content-range", "accept-ranges", "last-modified", "etag", "location", "allow"]
 requests = [
     ("GET", "/static/example.txt", {}),
     ("HEAD", "/static/example.txt", {}),
@@ -82,6 +85,9 @@ requests = [
     ("GET", "/static/example.txt", {"if-none-match": "*"}),
     ("GET", "/static/example.txt", {"if-none-match": '"nomatch"'}),
     ("GET", "/static/example.txt", {"if-none-match": '"nomatch"', "if-modified-since": LM}),
+    ("GET", "/static/frac.txt", {}),
+    ("GET", "/static/x%5cy.txt", {}),
+    ("GET", "/static/x%5Cy.txt", {"if-none-match": '"nomatch", W/"0f52ab3523ad636d7688dc1b577fc7b1"'}),
     ("GET", "/static/", {}),
     ("GET", "/static/sub", {}),
     ("GET", "/site/", {}),

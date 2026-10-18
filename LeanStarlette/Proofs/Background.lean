@@ -5,12 +5,36 @@ import LeanStarlette.RepoImpl.Background
 
 `BackgroundTasks.run` is `runAll` on the task list: each task starts after
 the previous one returns, and an exception from one skips the rest (the
-monad's bind). Core Lean has no `LawfulMonad IO` instance, so the order is
-proved for `runAll` in every lawful monad, and, concretely, in a trace monad
-where each task records its index.
+monad's bind). Core Lean v4.35 builds `IO` on `EST` and states no
+`LawfulMonad` for it, so this file proves it (`instLawfulMonadEST`); the
+order is then proved for `run` in `IO` itself (`background_run_order_io`),
+for `runAll` in every lawful monad, and, concretely, in a trace monad where
+each task records its index.
 -/
 
-namespace LeanStarlette.BackgroundTasks
+namespace LeanStarlette
+
+/-- `EST` (and so `IO`) satisfies the monad laws: its `pure` and `bind` are
+ordinary definitions by cases on `EST.Out`, and `map`/`seq` default to
+`bind`. -/
+instance instLawfulMonadEST (ε σ : Type) : LawfulMonad (EST ε σ) :=
+  LawfulMonad.mk'
+    (id_map := fun x => by
+      funext s
+      show EST.bind x (fun a => EST.pure (id a)) s = x s
+      simp only [EST.bind, EST.pure, id]
+      cases x s <;> rfl)
+    (pure_bind := fun a f => by funext s; rfl)
+    (bind_assoc := fun x f g => by
+      funext s
+      show EST.bind (EST.bind x f) g s = EST.bind x (fun a => EST.bind (f a) g) s
+      simp only [EST.bind]
+      cases x s <;> rfl)
+
+/-- `IO` is a lawful monad. -/
+instance instLawfulMonadIO : LawfulMonad IO := inferInstanceAs (LawfulMonad (EST IO.Error IO.RealWorld))
+
+namespace BackgroundTasks
 
 /-- `run` is `runAll` on the tasks, in the order they were added. -/
 theorem run_eq (bt : BackgroundTasks) : bt.run = runAll bt.tasks := rfl
@@ -29,6 +53,12 @@ theorem background_run_order {m : Type → Type} [Monad m] [LawfulMonad m] (ts :
     (t : m PUnit) : runAll (ts ++ [t]) = (do runAll ts; t) := by
   simp [runAll, List.forM_append]
 
+/-- **`background_run_order` for `IO`**: running the tasks after `add_task t`
+runs the earlier tasks, then `t`. -/
+theorem background_run_order_io (bt : BackgroundTasks) (t : IO Unit) :
+    (bt.addTask t).run = (do bt.run; t) := by
+  rw [run_eq, run_eq, addTask_tasks, background_run_order]
+
 /-- A task that records its index. -/
 def logTask (i : Nat) : StateM (List Nat) PUnit := modify (· ++ [i])
 
@@ -43,4 +73,6 @@ theorem run_order_trace (is : List Nat) (log : List Nat) :
     show ((runAll (is.map logTask)).run (log ++ [i])).2 = log ++ i :: is
     rw [ih]; simp
 
-end LeanStarlette.BackgroundTasks
+end BackgroundTasks
+
+end LeanStarlette

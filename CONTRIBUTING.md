@@ -122,14 +122,12 @@ Each has a `status = "deviation"` row in `docs/traceability.toml`.
   no traceback). An `IO` error is reported as `RuntimeError`.
 * **Methods** keep their given order with `HEAD` appended after `GET`;
   upstream stores a set.
-* **ETag** of a file is `"<mtime ns hex>-<size hex>"`; upstream hashes
-  `f"{mtime}-{size}"` with MD5. The value is opaque to clients (RFC 9110
-  8.8.3) and still changes with the file; Lean core has no MD5.
 * **`StaticFiles(check_dir=True)`** checks the directory on every request
   (upstream at construction): a missing directory is a 500 either way.
 * **Background tasks** are `IO` actions (`BackgroundTask(func, *args)` is the
-  closure); their order is proved for `runAll` in every lawful monad, since
-  core Lean has no `LawfulMonad IO` instance, and `run` is `runAll` at `IO`.
+  closure); their order is proved for `run` in `IO` (`background_run_order_io`,
+  with the `LawfulMonad IO` instance proved in `Proofs/Background.lean`) and for
+  `runAll` in every lawful monad.
 * **An `int` path segment of more than 4300 digits** does not match (404),
   as Keel's `int` convertor caps its digits before converting. Upstream's
   regex matches and then `int()` raises, a 500 (UP-052).

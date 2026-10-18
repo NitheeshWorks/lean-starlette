@@ -102,6 +102,10 @@ def BackgroundRunOrder : Prop :=
   ∀ {m : Type → Type} [Monad m] [LawfulMonad m] (ts : List (m PUnit)) (t : m PUnit),
     BackgroundTasks.runAll (ts ++ [t]) = (do BackgroundTasks.runAll ts; t)
 
+/-- `BackgroundTasks.run` in `IO`: a task added last runs after the others. -/
+def BackgroundRunOrderIO : Prop :=
+  ∀ (bt : BackgroundTasks) (t : IO Unit), (bt.addTask t).run = (do bt.run; t)
+
 /-- A printed `Range` header parses back to its byte ranges. -/
 def RangeParsePrint : Prop :=
   ∀ (size : Nat) (rs : ByteRanges size), size ≤ maxPrintable →
@@ -125,6 +129,7 @@ def ServedPathInside : Prop :=
   ∀ (dir p : String) (segs : List String), staticSegments p = some segs →
     joinUnder dir segs = dir ++ String.join (segs.map ("/" ++ ·)) ∧
       ∀ s ∈ segs, s.isEmpty = false ∧ s ≠ "." ∧ s ≠ ".." ∧
-        s.contains '/' = false ∧ s.contains '\\' = false ∧ s.contains '\x00' = false
+        s.contains '/' = false ∧ (System.Platform.isWindows && s.contains '\\') = false ∧
+        s.contains '\x00' = false
 
 end LeanStarlette.Spec

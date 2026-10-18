@@ -24,8 +24,8 @@ def addTask (bt : BackgroundTasks) (task : IO Unit) : BackgroundTasks := ⟨bt.t
 abbrev add_task := @addTask
 
 /-- Run actions in sequence, in any monad: the code `run` executes, stated
-generically so its order is a theorem for every lawful monad (core Lean has
-no `LawfulMonad IO` instance). -/
+generically so its order is a theorem for every lawful monad
+(`background_run_order`), `IO` included (`background_run_order_io`). -/
 def runAll {m : Type → Type} [Monad m] (ts : List (m PUnit)) : m PUnit := ts.forM id
 
 /-- `await tasks()`: run every task, in order. -/
