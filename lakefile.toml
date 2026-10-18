@@ -43,3 +43,8 @@ rev = "main"
 name = "LeanJinja2"
 git = "https://github.com/NitheeshWorks/lean-jinja2"
 rev = "main"
+
+[[require]]
+name = "Keel"
+git = "https://github.com/NitheeshWorks/lean-keel"
+rev = "main"

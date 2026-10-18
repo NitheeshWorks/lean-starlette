@@ -1,0 +1,123 @@
+import LeanStarlette.RepoImpl.Request
+
+/-!
+# RepoImpl: responses
+
+`starlette/responses.py`: `Response`, `PlainTextResponse`, `HTMLResponse`,
+`JSONResponse` and `RedirectResponse`. In Python the last four are
+subclasses; here there is one `Response` type and five functions that build
+it, with Starlette's names and defaults.
+
+`Response.make` is `Response.__init__`: it renders the content and runs
+`init_headers`, which adds `content-length` (unless given, and unless the
+status forbids a body) and `content-type` (with `; charset=utf-8` for
+`text/*`). Unlike upstream it also drops the body when the status forbids one
+(UP-028), so `Response.h_body` holds.
+-/
+
+namespace LeanStarlette
+
+/-- Response content: text (encoded as UTF-8) or bytes. -/
+structure Content where
+  bytes : ByteArray
+
+instance : Coe String Content := ⟨fun s => ⟨s.toUTF8⟩⟩
+instance : Coe ByteArray Content := ⟨Content.mk⟩
+instance : EmptyCollection Content := ⟨⟨.empty⟩⟩
+
+/-- `media_type`, with `; charset=utf-8` appended to a `text/*` type that
+has no charset. -/
+def contentType (mt : String) : String :=
+  if mt.startsWith "text/" && !((lowerAscii mt).splitOn "charset=").length > 1 then
+    mt ++ "; charset=utf-8"
+  else mt
+
+/-- `Response.init_headers`. -/
+def initHeaders (status : Nat) (body : ByteArray) (headers : List (String × String))
+    (media_type : Option String) : Headers :=
+  let h := Headers.ofList headers
+  let h := if !h.contains "content-length" && bodyAllowed status then
+      h.append "content-length" (toString body.size) else h
+  match media_type with
+  | some mt => if h.contains "content-type" then h else h.append "content-type" (contentType mt)
+  | none => h
+
+/-- The body a status allows: the content, or nothing for 1xx, 204, 304. -/
+def allowedBody (status : Nat) (body : ByteArray) : ByteArray :=
+  if bodyAllowed status then body else .empty
+
+theorem allowedBody_ok (status : Nat) (body : ByteArray) :
+    bodyAllowed status = true ∨ (allowedBody status body).size = 0 := by
+  unfold allowedBody; split
+  · exact .inl ‹_›
+  · exact .inr rfl
+
+/-- `Response(content, status_code, headers, media_type)`. -/
+def Response.make (content : Content) (status_code : Nat) (headers : List (String × String))
+    (media_type : Option String) (h : StatusCode.Valid status_code) : Response :=
+  let body := allowedBody status_code content.bytes
+  { status_code, body, h_status := h, h_body := allowedBody_ok _ _
+    headers := initHeaders status_code body headers media_type }
+
+/-! ## Starlette's response classes, as functions -/
+namespace Responses
+
+/-- `Response(content=b"", status_code=200, headers=None, media_type=None)`. -/
+def Response (content : Content := {}) (status_code : Nat := 200) (headers : List (String × String) := [])
+    (media_type : Option String := none) (h : StatusCode.Valid status_code := by decide) :
+    LeanStarlette.Response :=
+  .make content status_code headers media_type h
+
+/-- `PlainTextResponse(content, ...)`: `text/plain; charset=utf-8`. -/
+def PlainTextResponse (content : Content := {}) (status_code : Nat := 200)
+    (headers : List (String × String) := []) (media_type : String := "text/plain")
+    (h : StatusCode.Valid status_code := by decide) : LeanStarlette.Response :=
+  .make content status_code headers (some media_type) h
+
+/-- `HTMLResponse(content, ...)`: `text/html; charset=utf-8`. -/
+def HTMLResponse (content : Content := {}) (status_code : Nat := 200)
+    (headers : List (String × String) := []) (media_type : String := "text/html")
+    (h : StatusCode.Valid status_code := by decide) : LeanStarlette.Response :=
+  .make content status_code headers (some media_type) h
+
+/-- The bytes `JSONResponse` sends for a value: `json.dumps(content,
+ensure_ascii=False, allow_nan=False, indent=None, separators=(",", ":"))`.
+lean-json's printer is compact and non-ASCII-preserving by default, and its
+`Json` has no NaN or infinity to print. -/
+def jsonBody (j : LeanJson.Json) : ByteArray := (LeanJson.print j).val
+
+/-- `JSONResponse(content, ...)`: `application/json`. -/
+def JSONResponse {α : Type} [LeanJson.IntoJson α] (content : α) (status_code : Nat := 200)
+    (headers : List (String × String) := []) (media_type : String := "application/json")
+    (h : StatusCode.Valid status_code := by decide) : LeanStarlette.Response :=
+  .make (jsonBody (LeanJson.intoJson content)) status_code headers (some media_type) h
+
+/-- The characters `RedirectResponse` leaves unquoted in `location`. -/
+def redirectSafe : List Char := ":/%#?=@[]!$&'()*+,;".toList
+
+/-- `RedirectResponse(url, status_code=307, headers=None)`. -/
+def RedirectResponse (url : String) (status_code : Nat := 307) (headers : List (String × String) := [])
+    (h : StatusCode.Valid status_code := by decide) : LeanStarlette.Response :=
+  let r := LeanStarlette.Response.make {} status_code headers none h
+  { r with headers := r.headers.set "location" (quote url redirectSafe) }
+
+end Responses
+
+export Responses (Response PlainTextResponse HTMLResponse JSONResponse RedirectResponse)
+
+/-! ## Accessors -/
+namespace Response
+
+/-- `response.media_type`'s header. -/
+def contentTypeOf (r : LeanStarlette.Response) : Option String := r.headers.get? "content-type"
+
+/-- `response.body` as text. -/
+def text (r : LeanStarlette.Response) : String := String.fromUTF8? r.body |>.getD ""
+
+/-- Replace a header (`response.headers[key] = value`). -/
+def setHeader (r : LeanStarlette.Response) (key value : String) : LeanStarlette.Response :=
+  { r with headers := r.headers.set key value }
+
+end Response
+
+end LeanStarlette

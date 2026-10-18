@@ -1,2 +1,2 @@
 import LeanStarlette.DataTypes.Chars
-import LeanStarlette.DataTypes.Path
+import LeanStarlette.DataTypes.Http

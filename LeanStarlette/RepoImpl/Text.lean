@@ -3,11 +3,30 @@ import LeanStarlette.DataTypes.Chars
 /-!
 # RepoImpl: text primitives
 
-Decimal digits, the prefix/suffix splits the router backtracks over, and
-small list helpers. All structural or well-founded on a size that shrinks.
+Decimal digits, splitting on a separator, and small list helpers. All structural or well-founded on a size that shrinks.
 -/
 
 namespace LeanStarlette
+
+/-! ## Characters -/
+
+theorem char_le_iff (a b : Char) : a ≤ b ↔ a.toNat ≤ b.toNat := by
+  simp only [Char.le_def, UInt32.le_iff_toNat_le]; rfl
+theorem toNat_ofNat_lt {n : Nat} (h : n < 0xd800) : (Char.ofNat n).toNat = n := by
+  have hv : n.isValidChar := Or.inl h
+  simp [Char.ofNat, hv, Char.ofNatAux, Char.toNat]
+theorem asciiLower_of_not_upper {d : Char} (h : ¬('A' ≤ d ∧ d ≤ 'Z')) : asciiLower d = d := by
+  unfold asciiLower; simp only [Bool.and_eq_true, decide_eq_true_eq]; exact ite_eq_right h
+theorem asciiLower_idem (c : Char) : asciiLower (asciiLower c) = asciiLower c := by
+  by_cases h : 'A' ≤ c ∧ c ≤ 'Z'
+  · have e : asciiLower c = Char.ofNat (c.toNat + 32) := by
+      unfold asciiLower; simp only [Bool.and_eq_true, decide_eq_true_eq]; exact ite_eq_left h
+    rw [e]; apply asciiLower_of_not_upper
+    rw [char_le_iff, char_le_iff] at h
+    have hA : 'A'.toNat = 65 := rfl
+    have hZ : 'Z'.toNat = 90 := rfl
+    rw [char_le_iff, char_le_iff, toNat_ofNat_lt (n := c.toNat + 32) (by omega), hA, hZ]; omega
+  · rw [asciiLower_of_not_upper h, asciiLower_of_not_upper h]
 
 /-- The digit character for `d < 10`. -/
 def digitChar (d : Nat) : Char := Char.ofNat (48 + d)
@@ -25,13 +44,6 @@ decreasing_by omega
 /-- The number a string of decimal digits denotes (Python's `int(s)` on
 `[0-9]+`). Leading zeros are allowed. -/
 def ofDigits (s : List Char) : Nat := s.foldl (fun a c => a * 10 + digitVal c) 0
-
-/-- Every way to cut `s` in two, longest first part first. This is the order
-in which a greedy regular-expression quantifier tries its candidates, so the
-router's backtracking agrees with Python's `re`. -/
-def splits : List Char → List (List Char × List Char)
-  | [] => [([], [])]
-  | c :: cs => (splits cs).map (fun p => (c :: p.1, p.2)) ++ [([], c :: cs)]
 
 /-- Split at the first occurrence of `sep`: `(before, some after)`, or
 `(s, none)` when `sep` does not occur. -/

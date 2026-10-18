@@ -1,1 +1,1 @@
-import LeanStarlette.Proofs.Template
+import LeanStarlette.Proofs.Text
