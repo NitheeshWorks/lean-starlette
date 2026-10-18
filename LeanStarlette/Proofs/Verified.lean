@@ -9,6 +9,8 @@ import LeanStarlette.Proofs.TestClient
 import LeanStarlette.Proofs.Chunked
 import LeanStarlette.Proofs.Middleware
 import LeanStarlette.Proofs.Cookies
+import LeanStarlette.Proofs.Sessions
+import LeanStarlette.Proofs.GZip
 
 /-!
 # The harness: one `Verified<Layer>` structure per layer
@@ -107,7 +109,7 @@ theorem theVerifiedTestClient : VerifiedTestClient where
   response := test_response_body
 
 /-- Middleware (m5): the stack, trusted hosts, the HTTPS redirect, CORS,
-cookies. -/
+cookies, sessions, GZip. -/
 structure VerifiedMiddleware where
   stackOrder : Spec.MiddlewareStackOrder
   trustedHostReject : Spec.TrustedHostReject
@@ -117,6 +119,8 @@ structure VerifiedMiddleware where
   corsAllowedOrigin : Spec.CorsAllowedOrigin
   cookieParsePrint : Spec.CookieParsePrint
   setCookieDeleteCookie : Spec.SetCookieDeleteCookie
+  sessionSignVerify : Spec.SessionSignVerify
+  gzipMinimumSize : Spec.GzipMinimumSize
 
 theorem theVerifiedMiddleware : VerifiedMiddleware where
   stackOrder := middleware_stack_order
@@ -127,5 +131,7 @@ theorem theVerifiedMiddleware : VerifiedMiddleware where
   corsAllowedOrigin := cors_allowed_origin
   cookieParsePrint := cookie_parse_print
   setCookieDeleteCookie := fun r jar k v hk => ⟨set_cookie_receive r jar k v hk, delete_cookie_receive r jar k hk⟩
+  sessionSignVerify := fun t d _ _ _ hage hi hk hh => session_sign_verify t d hage hi hk hh
+  gzipMinimumSize := gzip_minimum_size
 
 end LeanStarlette

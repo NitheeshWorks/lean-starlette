@@ -258,4 +258,19 @@ def SetCookieDeleteCookie : Prop :=
     (CookieJar.receiveAll jar (r.set_cookie k v (_h := hk))).lookup k = some (cookieQuote v) ∧
     (CookieJar.receiveAll jar (r.delete_cookie k (h := hk))).lookup k = none
 
+/-- The cookie `SessionMiddleware` sets at `ts` loads back, at any `now`
+within `max_age`, as the same session: for every session JSON reads back
+(integers within 4300 digits, no repeated key, at most 200 deep). -/
+def SessionSignVerify : Prop :=
+  ∀ (t : LeanItsdangerous.TimestampSigner) (d : Array (String × LeanJson.Json)) (maxAge : Option Nat) (now ts : UInt64),
+    LeanItsdangerous.TimestampSigner.AgeOk maxAge now ts → LeanJson.Spec.IntsFit (.obj d) →
+    LeanJson.Spec.KeysUnique (.obj d) → (LeanJson.Json.obj d).height ≤ 200 →
+    decodeSession t maxAge now (encodeSession t d ts) = .loaded d
+
+/-- `GZipMiddleware` returns a response whose body is in memory and shorter
+than `minimum_size` exactly as it was. -/
+def GzipMinimumSize : Prop :=
+  ∀ (minimum_size : Nat) (exclude : List String) (gzip headOnly : Bool) (r : Response),
+    r.stream = none → r.body.size < minimum_size → gzipResponse minimum_size exclude gzip headOnly r = pure r
+
 end LeanStarlette.Spec

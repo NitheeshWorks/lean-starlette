@@ -1,6 +1,8 @@
 import Lean
 import LeanStarlette.RepoImpl.Middleware
 import LeanStarlette.RepoImpl.Sessions
+import LeanStarlette.RepoImpl.Authentication
+import LeanStarlette.RepoImpl.GZip
 
 /-!
 # APIs: middleware

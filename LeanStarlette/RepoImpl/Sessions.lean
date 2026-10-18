@@ -17,17 +17,17 @@ session was changed and is not empty, or clears it when it was changed to
 empty from a loaded one, and adds `Vary: Cookie` when the session was read.
 
 The cookie is read as bytes by Latin-1, where upstream encodes the text as
-UTF-8: a value with a character beyond ASCII never carries a valid
-signature either way, and is refused here before the signature check.
+UTF-8: a signed value is ASCII, so a value with any other character fails
+the signature either way (one beyond U+00FF is refused here before it).
 -/
 
 namespace LeanStarlette
 
 open LeanJson LeanItsdangerous
 
-/-- Characters as bytes, when every one is ASCII. -/
-def asciiBytes? (s : List Char) : Option Bytes :=
-  if s.all (·.toNat < 128) then some (s.map (·.toNat.toUInt8)) else none
+/-- Characters as bytes (Latin-1), when every one is below U+0100. -/
+def latin1Bytes? (s : List Char) : Option Bytes :=
+  if s.all (·.toNat < 256) then some (s.map (·.toNat.toUInt8)) else none
 
 /-- Bytes as characters (Latin-1). -/
 def latin1Chars (b : Bytes) : List Char := b.map fun x => Char.ofNat x.toNat
@@ -56,12 +56,12 @@ inductive SessionLoad where
 
 /-- **Load a session cookie** at `now`. -/
 def decodeSession (t : TimestampSigner) (maxAge : Option Nat) (now : UInt64) (cookie : String) : SessionLoad :=
-  match asciiBytes? cookie.toList with
+  match latin1Bytes? cookie.toList with
   | none => .invalid
   | some bs =>
-    match t.unsign bs maxAge now with
+    match (t.unsign bs maxAge now).val with
     | .error _ => .invalid
-    | .ok ⟨(payload, _), _⟩ =>
+    | .ok (payload, _) =>
       match LeanHttpx.Base64.decodeList (latin1Chars payload) with
       | none => .broken "binascii.Error: invalid base64 in a signed session"
       | some raw =>
@@ -80,12 +80,6 @@ def sessionFlags (same_site : SameSite) (https_only : Bool) (domain : Option Str
     String :=
   "httponly; samesite=" ++ same_site.str ++ (if https_only then "; secure" else "") ++
     (match domain with | some d => "; domain=" ++ d | none => "") ++ (if partitioned then "; partitioned" else "")
-
-/-- `MutableHeaders.add_vary_header`. -/
-def addVary (h : Headers) (v : String) : Headers :=
-  match h.get? "vary" with
-  | some e => h.set "vary" (e ++ ", " ++ v)
-  | none => h.set "vary" v
 
 /-- The headers `SessionMiddleware` sends after the application ran. -/
 def sessionResponseHeaders (t : TimestampSigner) (session_cookie : String) (max_age : Option Nat) (path flags : String)

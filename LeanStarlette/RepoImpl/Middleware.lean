@@ -26,6 +26,12 @@ where `call_next` runs the rest of the stack. -/
 def BaseHTTPMiddleware (dispatch : Request → (Request → AppM Response) → AppM Response) : Middleware :=
   fun app req => dispatch req app
 
+/-- `MutableHeaders.add_vary_header`. -/
+def addVary (h : Headers) (v : String) : Headers :=
+  match h.get? "vary" with
+  | some e => h.set "vary" (e ++ ", " ++ v)
+  | none => h.set "vary" v
+
 /-! ## TrustedHostMiddleware -/
 
 /-- Upstream's assertion on a host pattern (`ENFORCE_DOMAIN_WILDCARD`): a `*`

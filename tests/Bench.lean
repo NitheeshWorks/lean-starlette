@@ -1,4 +1,5 @@
 import LeanStarlette
+import LeanStarlette.RepoImpl.Deflate
 
 /-!
 # Large JSON body, end to end
@@ -272,6 +273,69 @@ def plainUpload (mb : Nat) : IO Unit := do
   IO.FS.removeDirAll dir
   IO.Process.exit 0
 
+def gzText (n : Nat) : ByteArray := Id.run do
+  let words : Array ByteArray := #["starlette ", "lean ", "middleware ", "gzip ", "the ", "a ", "response ", "body ",
+    "\n", "{\"k\": 12345} "].map String.toUTF8
+  let mut b := ByteArray.emptyWithCapacity (n + 16)
+  let mut x := 12345
+  for _ in [0:n] do
+    if b.size ≥ n then break
+    x := (x * 1103515245 + 12345) % 2147483648
+    let w := words[x % 10]!
+    for k in [0:w.size] do b := b.push w[k]!
+  return b.extract 0 n
+
+def gzRand (n : Nat) : ByteArray := Id.run do
+  let mut b := ByteArray.emptyWithCapacity n
+  let mut x := 7
+  for _ in [0:n] do
+    x := (x * 6364136223846793005 + 1442695040888963407) % 18446744073709551616
+    b := b.push (x / 72057594037927936).toUInt8
+  return b
+/-- Compress inputs, check them through lean-httpx's gunzip and write them to `dir` for zlib. -/
+def gzipTest (dir : String) : IO Unit := do
+  let cases : List (String × ByteArray) := [("empty", .empty), ("a", "a".toUTF8), ("text1k", gzText 1000), ("text1m", gzText 1000000),
+    ("zeros20m", ⟨Array.replicate 20000000 0⟩), ("rand200k", gzRand 200000), ("text10m", gzText 10000000)]
+  for (name, src) in cases do
+    let t0 ← IO.monoMsNow
+    let z := LeanStarlette.Deflate.gzip src
+    let t1 ← IO.monoMsNow
+    let back := LeanHttpx.Decoders.gunzip z
+    let ok := match back with | .ok b => b == src | .error _ => false
+    IO.println s!"{name}: {src.size} -> {z.size} in {t1 - t0} ms, httpx gunzip ok {ok}"
+    (← IO.getStdout).flush
+    IO.FS.writeBinFile s!"{dir}/gz-{name}.gz" z
+    IO.FS.writeBinFile s!"{dir}/gz-{name}.raw" src
+  -- sync-flushed pieces concatenate
+  let a := gzText 70000; let b := gzText 5000
+  let z := LeanStarlette.Deflate.gzipHeader ++ LeanStarlette.Deflate.deflate a false ++ LeanStarlette.Deflate.deflate b true ++
+    LeanStarlette.Deflate.gzipTrailer (LeanStarlette.Deflate.crc32Update (LeanStarlette.Deflate.crc32Update 0 a) b) (a.size + b.size)
+  IO.FS.writeBinFile (dir ++ "/gz-pieces.gz") z
+  IO.FS.writeBinFile (dir ++ "/gz-pieces.raw") (a ++ b)
+  IO.println s!"pieces httpx ok {match LeanHttpx.Decoders.gunzip z with | .ok x => x == a ++ b | .error _ => false}"
+
+/-- Time the compressor's parts on one input. -/
+def gzParts : IO Unit := do
+  for (name, src) in [("rand200k", gzRand 200000), ("text1m", gzText 1000000), ("zeros20m", (⟨Array.replicate 20000000 0⟩ : ByteArray))] do
+    let t0 ← IO.monoNanosNow
+    let crc := LeanStarlette.Deflate.crc32Update 0 src
+    let t1 ← IO.monoNanosNow
+    let (toks, _) := LeanStarlette.Deflate.tokenize {} src 0 (min src.size 65535)
+    let t2 ← IO.monoNanosNow
+    let bits := toks.foldl (fun a t => a + LeanStarlette.Deflate.tokenBits t) 0
+    let t3 ← IO.monoNanosNow
+    let w := toks.foldl LeanStarlette.Deflate.putToken { out := .empty }
+    let t4 ← IO.monoNanosNow
+    let t5 ← IO.monoNanosNow
+    let c := (({} : LeanStarlette.Deflate.Chains).insertRun src (min src.size 65535) 0)
+    let t6 ← IO.monoNanosNow
+    let mut acc := 0
+    for i in [0:min src.size 65535] do
+      acc := acc + c.best src i (min src.size 65535) / 65536
+    let t7 ← IO.monoNanosNow
+    IO.println s!"  inserts {c.head.size} {(t6 - t5) / 1000} us; best x64K on full chains {acc} {(t7 - t6) / 1000} us"
+    IO.println s!"{name}: crc {crc} {(t1 - t0) / 1000} us (all); first 64K: tokenize {toks.size} {(t2 - t1) / 1000} us, bits {bits} {(t3 - t2) / 1000} us, put {w.out.size} {(t4 - t3) / 1000} us"
+
 def main (args : List String) : IO Unit := do
   if args.headD "" == "plainupload" then plainUpload ((args.getD 1 "20").toNat!)
   if args.headD "" == "formmem" then IO.Process.exit (← formMem (args.getD 1 "")).toUInt8
@@ -280,6 +344,8 @@ def main (args : List String) : IO Unit := do
   if args.headD "" == "chunkdecode" then chunkDecode ((args.getD 1 "20").toNat!) ((args.getD 2 "65536").toNat!); return
   if args.headD "" == "file" then fileBench ((args.getD 1 "100").toNat!)
   if args.headD "" == "paths" then paths; return
+  if args.headD "" == "gziptest" then gzipTest (args.getD 1 "."); return
+  if args.headD "" == "gzparts" then gzParts; return
   if args.headD "" == "digits" then digits; return
   let shape := args.headD "array"
   let mb := (args.getD 1 "20").toNat!
