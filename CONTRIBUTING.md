@@ -325,7 +325,9 @@ the application sees the headers the client sent.
   through `Async` continuations was copied on every read (10 MiB: 156 ms
   against 38 ms). One deadline serves many reads; it is renewed when bytes
   came since it was set, so a stalled body is cut off after one to two
-  `lingeringTimeout`s (`408`).
+  `lingeringTimeout`s (`408`). A client that closes before the whole body arrived is
+  Starlette's `ClientDisconnect` (`request.body()` raises it) and gets no
+  response, as uvicorn sends none.
 * A chunked body: `readChunked` keeps the pieces apart while
   `ChunkScan.feed` finds the end (h11's limits: at most 20 hex digits; a
   size line or trailer block still incomplete past 16 KiB after a receive is

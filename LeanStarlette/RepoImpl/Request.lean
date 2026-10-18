@@ -350,6 +350,7 @@ def body (r : Request) : AppM ByteArray :=
     | .ok b => pure b
     | .error 408 => throw (.http 408 "Request Timeout" [] (by decide))
     | .error 413 => throw (.http 413 "Content Too Large" [] (by decide))
+    | .error 499 => throw (.custom "ClientDisconnect" "" .null)
     | .error _ => throw (.http 400 "Bad Request" [] (by decide))
   | none => pure r.bodyBytes
 

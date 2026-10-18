@@ -902,6 +902,11 @@ def chunkedCases : List Case :=
          ok (statusIs out "413")⟩,
    ⟨"uvicorn+starlette: a chunked body that ends early closes the connection [socket]", "chunked: eof before the last chunk", do
       let (out, ms) ← sendSlow socketPort [(chunkedHead ++ "5\r\nhello\r\n").toUTF8] 50 (endWrite := true)
+      ok (out.isEmpty && ms < 5000)⟩,
+   ⟨"uvicorn(h11)+starlette: a body shorter than Content-Length, then a half-close, is ClientDisconnect: no response [socket]",
+      "content-length: eof before the body's end", do
+      let head := "POST /body HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\nabc"
+      let (out, ms) ← sendSlow socketPort [head.toUTF8] 50 (endWrite := true)
       ok (out.isEmpty && ms < 5000)⟩]
 
 def formPort : Nat := 18732

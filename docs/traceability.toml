@@ -726,10 +726,10 @@ test = ["tests/Bench.lean::m5Bench", "scripts/bench.sh"]
 [[requirement]]
 id = "transport.body-read"
 upstream = "uvicorn/protocols/http/h11_impl.py:RequestResponseCycle.receive"
-title = "A Content-Length body is read when the application asks for it (the router, on a match), 100 Continue first when the client waits; an unread body is drained after the response; one buffer of the body's size, one inactivity deadline for many reads"
+title = "A Content-Length body is read when the application asks for it (the router, on a match), 100 Continue first when the client waits; an unread body is drained after the response; one buffer of the body's size, one inactivity deadline for many reads; a body cut short by the client's close is ClientDisconnect and gets no response"
 status = "tested"
-realises = ["LeanStarlette.readBodyIO", "LeanStarlette.readInto", "LeanStarlette.Request.loadBody", "LeanStarlette.Request.body"]
-test = ["tests/Bench.lean::bodyBench", "tests/Conformance.lean::slowUploadCases", "tests/FramingCases.lean::framingCases"]
+realises = ["LeanStarlette.readBodyIO", "LeanStarlette.readInto", "LeanStarlette.Request.loadBody", "LeanStarlette.Request.body", "LeanStarlette.exchange"]
+test = ["tests/Bench.lean::bodyBench", "tests/Conformance.lean::slowUploadCases", "tests/Conformance.lean::chunkedCases", "tests/FramingCases.lean::framingCases"]
 
 [[requirement]]
 id = "transport.wire"

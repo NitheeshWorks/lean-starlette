@@ -106,8 +106,9 @@ structure Request where
   bodyBytes : ByteArray := .empty
   /-- A body still on the connection: reading it (once; later calls return
   the same result) gives the bytes, or the status that ends the request
-  (`408` for a stalled body, `413` over `max_body_size`, `400` for bad
-  framing). The router reads it
+  (`408` for a stalled body, `413` over `max_body_size`, `499` for a client
+  that closed before sending all of it, Starlette's `ClientDisconnect`, `400`
+  for bad framing). The router reads it
   into `bodyBytes` when a route matches (`Request.loadBody`), as an
   endpoint's `await request.body()` would; a `404` or `405` leaves it unread,
   as upstream does. -/

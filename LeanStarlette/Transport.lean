@@ -473,13 +473,20 @@ connection can serve another request (the application ran, did not fail,
 and the response leaves the connection open). -/
 def exchange [Transport t] (a : Application) (conn : t) (config : Std.Http.Config)
     (client : Option (String × Nat)) (extensions : Extensions) (rq : WireRequest) (bytes : ByteArray)
-    (body : Option ByteArray) (receive? : Option (IO (Except Nat ByteArray))) : Async (Option Unit) := do
+    (body : Option ByteArray) (receive? : Option (IO (Except Nat ByteArray)))
+    (disconnected : Option (IO.Ref Bool) := none) : Async (Option Unit) := do
   let handled ← IO.mkRef false
   let preread ← IO.mkRef body
   let kept ← IO.mkRef false
   -- uvicorn closes the connection after an exception in the application
   let failed ← IO.mkRef false
-  let write (r : Response) : Async Unit := do kept.set (← writeResponse conn config rq r)
+  -- a client that went away while sending its body gets no response, as
+  -- uvicorn sends none after `ClientDisconnect`
+  let write (r : Response) : Async Unit := do
+    let gone ← match disconnected with
+      | some d => d.get
+      | none => pure false
+    if gone then kept.set false else kept.set (← writeResponse conn config rq r)
   let replay : Replay t := ⟨conn, ← IO.mkRef (some bytes), ← IO.mkRef false, handled⟩
   Std.Http.Server.serveConnection replay
     (a.toHandler handled client (some preread) (some write) (fun _ => failed.set true) receive?)
@@ -537,6 +544,7 @@ def serveRequests [Transport t] (a : Application) (conn : t) (config : Std.Http.
           let memo ← IO.mkRef (none : Option (Except Nat ByteArray))
           let complete ← IO.mkRef false
           let started ← IO.mkRef false
+          let disconnected ← IO.mkRef false
           let receive : IO (Except Nat ByteArray) := do
             if let some r ← memo.get then return r
             started.set true
@@ -546,12 +554,13 @@ def serveRequests [Transport t] (a : Application) (conn : t) (config : Std.Http.
               deadline false (len - initial.size)
             let res : Except Nat ByteArray := match how with
               | .complete _ => .ok body
-              | .eof _ => .ok body
+              | .eof _ => .error 499
               | .timeout => .error 408
             if how matches .complete _ then complete.set true
+            if how matches .eof _ then disconnected.set true
             memo.set (some res)
             return res
-          if let some _ ← exchange a conn config client extensions rq bytes (some .empty) (some receive) then
+          if let some _ ← exchange a conn config client extensions rq bytes (some .empty) (some receive) (some disconnected) then
             let mut done ← complete.get
             unless ← started.get do
               -- unread: the client still sends it, unless it waits for 100 Continue
