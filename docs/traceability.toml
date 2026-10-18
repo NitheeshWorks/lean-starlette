@@ -416,7 +416,7 @@ id = "transport.body-preread"
 upstream = "uvicorn: request bodies streamed to the app"
 title = "A Content-Length body is read by the transport (linear; Std.Http alone is quadratic in the body), within maxBodySize, and handed to the application directly: Std.Http gets the head alone, its framing headers renamed and restored in place (hideFraming); 50 MB in under 0.5 s"
 status = "tested"
-realises = ["LeanStarlette.readBody", "LeanStarlette.joinChunks", "LeanStarlette.plainBodyLength", "LeanStarlette.hideFraming", "LeanStarlette.prereadBody", "LeanStarlette.readBodyInto"]
+realises = ["LeanStarlette.joinChunks", "LeanStarlette.plainBodyLength", "LeanStarlette.hideFraming", "LeanStarlette.readBodyInto"]
 test = ["tests/Bench.lean", "tests/Conformance.lean::slowUploadCases"]
 
 [[requirement]]
@@ -439,9 +439,9 @@ test = ["tests/Conformance.lean::chunkedCases"]
 [[requirement]]
 id = "transport.body-stall"
 upstream = "uvicorn: no body read timeout"
-title = "A body that stalls longer than config.lingeringTimeout is 408 (uvicorn waits indefinitely); a slow body that keeps arriving is served"
+title = "A body with no byte for one to two config.lingeringTimeouts (one deadline, renewed on progress) is 408 (uvicorn waits indefinitely); a slow body that keeps arriving is served"
 status = "deviation"
-realises = ["LeanStarlette.readBody"]
+realises = ["LeanStarlette.readBodyIO", "LeanStarlette.readInto", "LeanStarlette.readChunked"]
 test = ["tests/Conformance.lean::slowUploadCases"]
 
 [[requirement]]
@@ -722,3 +722,36 @@ title = "A 1 MB Cookie header (70k names, 100k repeats, 50k quoted), 1000 reques
 status = "tested"
 realises = ["LeanStarlette.cookieParser", "LeanStarlette.CORSMiddleware", "LeanStarlette.GZipMiddleware"]
 test = ["tests/Bench.lean::m5Bench", "scripts/bench.sh"]
+
+[[requirement]]
+id = "transport.body-read"
+upstream = "uvicorn/protocols/http/h11_impl.py:RequestResponseCycle.receive"
+title = "A Content-Length body is read when the application asks for it (the router, on a match), 100 Continue first when the client waits; an unread body is drained after the response; one buffer of the body's size, one inactivity deadline for many reads"
+status = "tested"
+realises = ["LeanStarlette.readBodyIO", "LeanStarlette.readInto", "LeanStarlette.Request.loadBody", "LeanStarlette.Request.body"]
+test = ["tests/Bench.lean::bodyBench", "tests/Conformance.lean::slowUploadCases", "tests/FramingCases.lean::framingCases"]
+
+[[requirement]]
+id = "transport.wire"
+upstream = "uvicorn/protocols/http/h11_impl.py; h11/_connection.py:_clean_up_response_headers_for_sending"
+title = "Responses on the wire as uvicorn 0.54 + h11 0.16 write them: HTTPStatus reason phrases, date and server first, the application's fields in order and spelling, h11's framing and Connection: close; keep-alive, pipelining, close after an exception"
+status = "implemented"
+realises = ["LeanStarlette.wireHead", "LeanStarlette.statusPhrase", "LeanStarlette.writeResponse", "LeanStarlette.serveRequests"]
+theorem = ["LeanStarlette.wire_chunked_decode", "LeanStarlette.wire_close", "LeanStarlette.wire_no_body"]
+test = ["tests/FramingCases.lean::framingCases"]
+
+[[requirement]]
+id = "transport.server-name"
+upstream = "uvicorn/config.py (server_header: server: uvicorn)"
+title = "The server field is Std.Http's serverName (LeanHTTP/1.1 by default); uvicorn sends server: uvicorn (set serverName for its bytes exactly)"
+status = "deviation"
+realises = ["LeanStarlette.serverDefaults", "LeanStarlette.defaultFields"]
+test = ["tests/FramingCases.lean::framingCases"]
+
+[[requirement]]
+id = "transport.continue"
+upstream = "uvicorn/protocols/http/h11_impl.py:RequestResponseCycle.receive (100 Continue)"
+title = "100 Continue is sent when the body is first read; for a chunked body, before it is read (it is decoded before the application runs), where uvicorn waits for the application"
+status = "deviation"
+realises = ["LeanStarlette.continueBytes", "LeanStarlette.requestOutcome"]
+test = ["tests/FramingCases.lean::framingCases", "tests/Bench.lean::formMem"]

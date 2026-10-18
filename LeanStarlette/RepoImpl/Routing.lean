@@ -190,7 +190,9 @@ leaves out methods other routes on the same path accept, contrary to RFC 9110
 15.5.6 (UP-027). -/
 def routerApp (routes : List BaseRoute) (redirect_slashes : Bool := true) : App := fun req =>
   match Router.resolve routes redirect_slashes req (policy := .unionOfPartials) with
-  | .found c => c.handler { req with path_params := c.params, root_path := c.root_path }
+  | .found c => do
+    let req ← req.loadBody
+    c.handler { req with path_params := c.params, root_path := c.root_path }
   | .methodNotAllowed allow => throw (methodNotAllowed allow)
   | .redirect url => pure (RedirectResponse url)
   | .notFound => throw (HTTPException 404)

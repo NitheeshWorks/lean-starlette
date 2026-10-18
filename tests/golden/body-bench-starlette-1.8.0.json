@@ -1,0 +1,34 @@
+{
+ "starlette": "1.8.0",
+ "uvicorn": "0.54.0",
+ "cases": {
+  "post10m-404": {
+   "mib": 10,
+   "route": "/missing",
+   "status": 404,
+   "upstream_warm_ms": 33.08,
+   "upstream_rss_mb": 0.0
+  },
+  "post10m-read": {
+   "mib": 10,
+   "route": "/len",
+   "status": 200,
+   "upstream_warm_ms": 52.48,
+   "upstream_rss_mb": 18.9
+  },
+  "post20m-404": {
+   "mib": 20,
+   "route": "/missing",
+   "status": 404,
+   "upstream_warm_ms": 48.93,
+   "upstream_rss_mb": 0.6
+  },
+  "post20m-read": {
+   "mib": 20,
+   "route": "/len",
+   "status": 200,
+   "upstream_warm_ms": 93.17,
+   "upstream_rss_mb": 39.1
+  }
+ }
+}

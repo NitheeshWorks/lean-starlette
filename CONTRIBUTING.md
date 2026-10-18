@@ -260,10 +260,16 @@ Each has a `status = "deviation"` row in `docs/traceability.toml`.
   * a body over `config.maxBodySize` (64 MiB by default) or the app's
     `max_body_size` is `413` (uvicorn has no limit);
   * a request without `Host` is `400`, as RFC 9112 3.2 requires (uvicorn: `200`);
-  * one request per connection: keep-alive is off, because only the first
-    request line is rewritten;
-  * a head not complete within `config.headerTimeout` is `408`.
+  * a first head not complete within `config.headerTimeout` is `408`; a
+    kept-alive connection idle for `keepAliveTimeout` (5 s, uvicorn's) is
+    closed quietly.
   Pass a `Std.Http.Config` to tighten the rest.
+* **On the wire** the bytes are uvicorn 0.54's with h11 0.16 (row
+  `transport.wire`; `tests/FramingCases.lean` compares 22 scenarios byte for
+  byte), but for the `server` field, `Std.Http`'s `serverName`
+  (`LeanHTTP/1.1` by default; set it to `uvicorn` for uvicorn's bytes), and
+  `100 Continue` for a chunked body, sent before the body is read rather
+  than when the application reads it.
 * **`TestClient` decodes the path once**, as a server does: `/x%2541`
   reaches the application as `/x%41`, as over a socket (conformance
   `tcSocketCases`). Starlette's test transport applies `unquote` to httpx's
@@ -306,8 +312,20 @@ the head alone, with `Content-Length` and `Transfer-Encoding` renamed to
 private names (`hideFraming`), which `requestOfHead` names back in place, so
 the application sees the headers the client sent.
 
-* A `Content-Length` body: `readBody`, reads of up to 64 KiB, each compacted
-  to its size (a read's buffer has the capacity asked for) and joined once.
+* A `Content-Length` body is read when the application asks for it
+  (`Request.receive?`): the router does when a route matches
+  (`Request.loadBody`), so a `404` or `405` leaves it on the connection, and
+  the transport reads and drops it after the response to keep the
+  connection (unless the client waits for `100 Continue`, which is then
+  never sent and the connection closed). The application runs on a thread
+  of its own, which blocks on each read (`readBodyIO`, 128 KiB at a time,
+  one `Async.block` each) into one buffer of the body's size. The buffer
+  belongs to that thread alone: Lean's runtime never updates an object
+  shared between threads in place, so a buffer in an `IO.Ref` or carried
+  through `Async` continuations was copied on every read (10 MiB: 156 ms
+  against 38 ms). One deadline serves many reads; it is renewed when bytes
+  came since it was set, so a stalled body is cut off after one to two
+  `lingeringTimeout`s (`408`).
 * A chunked body: `readChunked` keeps the pieces apart while
   `ChunkScan.feed` finds the end (h11's limits: at most 20 hex digits; a
   size line or trailer block still incomplete past 16 KiB after a receive is
@@ -348,6 +366,16 @@ Upstream's GZip is uvicorn 0.54 with h11; a `Cookie` header over 16 KiB is
 a `431` there, so the cookie cases are timed at the function. The
 compressor searches less often inside long runs of literals (after 256 in a
 row, one position in up to eight), so incompressible bodies cost little.
+
+`bench bodybench` (in `scripts/bench.sh`) POSTs 10 and 20 MiB to a server
+in a child process, against uvicorn 0.54 + Starlette 1.8.0 on the same
+requests (`tests/golden/body-bench-starlette-1.8.0.json`, warm best of 5,
+peak resident memory less the memory before, after a warm-up): to a route
+that reads the body, 44 / 87 ms and +24 / +50 MB against 52 / 93 ms and
++19 / +39 MB; to a 404, 35 / 62 ms and +16 / +18 MB against 33 / 48 ms and
++0 / +0.5 MB. Unread, uvicorn drops the body as it arrives; here the cost
+is fixed per request (the threads' heaps: 6 MB with no body, the same for
+1 and 40 MiB), so that row is bounded at twice the body size instead.
 
 ### Large JSON bodies
 

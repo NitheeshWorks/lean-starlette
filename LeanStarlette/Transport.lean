@@ -153,7 +153,8 @@ records that the application ran, so the transport can tell its own error
 responses from the application's. -/
 def Application.toHandler (a : Application) (handled : IO.Ref Bool)
     (client : Option (String × Nat) := none) (preread : Option (IO.Ref (Option ByteArray)) := none)
-    (write : Option (Response → Async Unit) := none) (report : Exception → IO Unit := fun _ => pure ()) :
+    (write : Option (Response → Async Unit) := none) (report : Exception → IO Unit := fun _ => pure ())
+    (receive? : Option (IO (Except Nat ByteArray)) := none) :
     Std.Http.Server.StatelessHandler :=
   Std.Http.Server.Handler.ofFn fun req => do
     handled.set true
@@ -166,7 +167,16 @@ def Application.toHandler (a : Application) (handled : IO.Ref Bool)
       | none =>
         let cap := min ((headContentLength req.line).getD 0) (a.max_body_size.getD (64 * 1024 * 1024) + 1)
         pure (← readBodyInto req.body cap limit (cap + 1024 * 1024 * 1024), false)
-    let response ← a.call (requestOfHead req.line body client (preread := pre)) report
+    let request := { requestOfHead req.line body client (preread := pre) with receive? }
+    -- An application that may read its body from the connection runs on a
+    -- thread of its own: reading blocks it (`Async.block`), never a thread
+    -- of the task pool.
+    let response ← match receive? with
+      | none => a.call request report
+      | some _ =>
+        match ← (await (← IO.asTask (a.call request report) .dedicated) : Async _) with
+        | .ok r => pure r
+        | .error _ => pure internalServerError
     match write with
     | some w =>
       w response
@@ -247,27 +257,61 @@ inductive BodyRead where
   | eof (chunks : Array ByteArray)
   | timeout
 
-/-- Read until `got + (bytes read)` reaches `need`, each read within `timeout`
-(as `Std.Http`'s `lingeringTimeout`). Reads ask for at most what is still
-missing, so nothing past the body is taken. The chunks are kept apart and
-joined once by the caller: appending to one buffer inside `Async` copies it
-on every read. Each step reads at least one byte. -/
-def readBody [Transport t] (c : t) (timeout : Std.Time.Millisecond.Offset) (acc : Array ByteArray)
-    (got need : Nat) : Async BodyRead := do
-  if hn : need ≤ got then return .complete acc else
-  let deadline ← Std.Async.Selector.sleep timeout
+/-- The most a body read asks for at once. -/
+def bodyReadSize : Nat := 128 * 1024
+
+/-- Read `remaining` more bytes of a body, appending them to `buf` (with
+`keep`; otherwise they are discarded), within `timeout` of inactivity: one
+deadline serves many reads, and when it passes it is renewed if bytes came
+since it was set (`progressed`), so a body is cut off after between one and two
+`timeout`s without a byte. Reads ask for at most what is missing, so nothing
+past the body is taken. -/
+def readInto [Transport t] (c : t) (timeout : Std.Time.Millisecond.Offset) (buf : IO.Ref ByteArray) (keep : Bool)
+    (deadline : Std.Async.Selector Unit) (progressed : Bool) (remaining : Nat) : Async BodyRead := do
+  if hr : remaining = 0 then return .complete #[] else
   let r ← Selectable.one #[
-    .case (Transport.recvSelector c (min 65536 (need - got)).toUInt64) (fun x => pure (some x)),
+    .case (Transport.recvSelector c (min bodyReadSize remaining).toUInt64) (fun x => pure (some x)),
     .case deadline (fun _ => pure none)]
   match r with
-  | none => return .timeout
-  | some none => return .eof acc
+  | none =>
+    if hs : progressed = false then return .timeout else
+    have : 2 * remaining + 0 < 2 * remaining + (if progressed then 1 else 0) := by simp_all
+    readInto c timeout buf keep (← Std.Async.Selector.sleep timeout) false remaining
+  | some none => return .eof #[]
   | some (some chunk) =>
-    if hc : chunk.size = 0 then return .eof acc else
-    have : need - (got + chunk.size) < need - got := by omega
-    -- a read's buffer has the capacity asked for; keep only its bytes
-    readBody c timeout (acc.push (chunk.extract 0 chunk.size)) (got + chunk.size) need
-termination_by need - got
+    if hc : chunk.size = 0 then return .eof #[] else
+    let n := min chunk.size remaining
+    if keep then buf.modify (· ++ chunk)
+    have hn : 0 < n := by omega
+    have : 2 * (remaining - n) + 1 < 2 * remaining + (if progressed then 1 else 0) := by split <;> omega
+    readInto c timeout buf keep deadline true (remaining - n)
+termination_by 2 * remaining + (if progressed then 1 else 0)
+
+/-- `readInto` for the thread that waits for the body (the application's):
+each read is one `Async.block`, and the bytes go into `buf`, a value of
+this thread alone, so it is extended in place. (An object shared between
+threads is never updated in place by Lean's runtime, so a buffer kept in a
+reference or carried through `Async` continuations would be copied on every
+read.) -/
+def readBodyIO [Transport t] (c : t) (timeout : Std.Time.Millisecond.Offset) (buf : ByteArray)
+    (deadline : Std.Async.Selector Unit) (progressed : Bool) (remaining : Nat) : IO (ByteArray × BodyRead) := do
+  if hr : remaining = 0 then return (buf, .complete #[]) else
+  let r ← Async.block (Selectable.one #[
+    .case (Transport.recvSelector c (min bodyReadSize remaining).toUInt64) (fun x => pure (some x)),
+    .case deadline (fun _ => pure none)])
+  match r with
+  | none =>
+    if hs : progressed = false then return (buf, .timeout) else
+    have : 2 * remaining + 0 < 2 * remaining + (if progressed then 1 else 0) := by simp_all
+    readBodyIO c timeout buf (← Async.block (Std.Async.Selector.sleep timeout)) false remaining
+  | some none => return (buf, .eof #[])
+  | some (some chunk) =>
+    if hc : chunk.size = 0 then return (buf, .eof #[]) else
+    let n := min chunk.size remaining
+    have hn : 0 < n := by omega
+    have : 2 * (remaining - n) + 1 < 2 * remaining + (if progressed then 1 else 0) := by split <;> omega
+    readBodyIO c timeout (buf ++ chunk) deadline true (remaining - n)
+termination_by 2 * remaining + (if progressed then 1 else 0)
 
 /-- Join chunks into one buffer of the right capacity, copying each once. -/
 def joinChunks (first : ByteArray) (chunks : Array ByteArray) : ByteArray :=
@@ -316,15 +360,12 @@ received past it, the start of the next request), or answer with a status.
 read the body and knows where the next request starts). -/
 inductive ChunkedOutcome where
   | forward (bytes : ByteArray) (body : Option ByteArray := none) (rest : ByteArray := .empty) (keep : Bool := false)
+  /-- A `Content-Length` body still on the connection: `initial` bytes of
+  its `len` have come with the head; `rest` follows the body. -/
+  | lazy (bytes : ByteArray) (initial : ByteArray) (len : Nat) (rest : ByteArray)
   | reject (status : Nat) (reason body : String)
   /-- Close without a response (uvicorn, when a chunked body ends early). -/
   | drop
-
-/-- The body after the head of a pre-read request (the bytes received after
-`e`, then the pieces), cut at `len`, and the bytes after it. -/
-def prereadBody (bytes : ByteArray) (e : Nat) (pieces : Array ByteArray) (len : Nat) : ByteArray × ByteArray :=
-  let b := joinChunks (bytes.extract e bytes.size) pieces
-  if b.size ≤ len then (b, .empty) else (b.extract 0 len, b.extract len b.size)
 
 /-- Decode the received bytes (`bytes` up to the body's start `e`, then the
 pieces) with the verified decoder into a buffer of `size`, the scanner's
@@ -395,13 +436,8 @@ def requestOutcome [Transport t] (conn : t) (config : Std.Http.Config) (bytes : 
   match plainBodyLength bytes with
   | some (e, len) =>
     if len ≤ limit then
-      if len > 0 then continue_
-      match ← readBody conn config.lingeringTimeout #[] bytes.size (e + len) with
-      | .complete cs =>
-        let (body, rest) := prereadBody bytes e cs len
-        pure (.forward (hideFraming bytes e) (some body) rest true)
-      | .eof cs => pure (.forward (hideFraming bytes e) (some (prereadBody bytes e cs len).1))
-      | .timeout => pure (.reject 408 "Request Timeout" "Request Timeout")
+      let avail := bytes.extract e bytes.size
+      pure (.lazy (hideFraming bytes e) (avail.extract 0 len) len (avail.extract len avail.size))
     else pure (.forward bytes)
   | none =>
     match chunkedBodyStart bytes with
@@ -430,6 +466,25 @@ def requestOutcome [Transport t] (conn : t) (config : Std.Http.Config) (bytes : 
         if framed then pure (.forward bytes)
         else pure (.forward (hideFraming bytes e) (some .empty) (bytes.extract e bytes.size) true)
       | none => pure (.forward bytes)
+
+/-- One exchange: `Std.Http` parses the head (`bytes`) and calls the
+application, whose response the transport writes. `some ()` when the
+connection can serve another request (the application ran, did not fail,
+and the response leaves the connection open). -/
+def exchange [Transport t] (a : Application) (conn : t) (config : Std.Http.Config)
+    (client : Option (String × Nat)) (extensions : Extensions) (rq : WireRequest) (bytes : ByteArray)
+    (body : Option ByteArray) (receive? : Option (IO (Except Nat ByteArray))) : Async (Option Unit) := do
+  let handled ← IO.mkRef false
+  let preread ← IO.mkRef body
+  let kept ← IO.mkRef false
+  -- uvicorn closes the connection after an exception in the application
+  let failed ← IO.mkRef false
+  let write (r : Response) : Async Unit := do kept.set (← writeResponse conn config rq r)
+  let replay : Replay t := ⟨conn, ← IO.mkRef (some bytes), ← IO.mkRef false, handled⟩
+  Std.Http.Server.serveConnection replay
+    (a.toHandler handled client (some preread) (some write) (fun _ => failed.set true) receive?)
+    (transportConfig config) extensions |>.run
+  return if (← handled.get) && (← kept.get) && !(← failed.get) then some () else none
 
 /-- Serve requests on one connection until it is not kept alive, at most
 `fuel` of them (`config.maxRequests`). `pending` are bytes already received
@@ -465,21 +520,46 @@ def serveRequests [Transport t] (a : Application) (conn : t) (config : Std.Http.
         -- verified decoder (`decodeChunkedBody_encode`). Std.Http then gets the
         -- head alone, its framing headers renamed (`hideFraming`), and the
         -- application the body, so Std.Http never copies it.
-        match ← requestOutcome conn config bytes (expectsContinue head e0) with
+        let expect := expectsContinue head e0
+        match ← requestOutcome conn config bytes expect with
         | .drop => pure ()
         | .reject code reason body => Transport.sendAll conn #[rawResponse code reason body]
         | .forward bytes body rest keep =>
-          let handled ← IO.mkRef false
-          let preread ← IO.mkRef body
-          let kept ← IO.mkRef false
-          -- uvicorn closes the connection after an exception in the application
-          let failed ← IO.mkRef false
-          let write (r : Response) : Async Unit := do kept.set (← writeResponse conn config rq r)
-          let replay : Replay t := ⟨conn, ← IO.mkRef (some bytes), ← IO.mkRef false, handled⟩
-          Std.Http.Server.serveConnection replay (a.toHandler handled client (some preread) (some write) (fun _ => failed.set true))
-            (transportConfig config) extensions |>.run
-          if keep && (← handled.get) && (← kept.get) && !(← failed.get) then
-            serveRequests a conn config client extensions fuel rest false
+          if let some _ ← exchange a conn config client extensions rq bytes body none then
+            if keep then serveRequests a conn config client extensions fuel rest false
+            else pure ()
+          else pure ()
+        | .lazy bytes initial len rest =>
+          -- The body is read when the application asks for it (the router does
+          -- when a route matches), with `100 Continue` first if the client
+          -- waits for it, as uvicorn does; else it is read and dropped after
+          -- the response, so the connection can serve the next request.
+          let memo ← IO.mkRef (none : Option (Except Nat ByteArray))
+          let complete ← IO.mkRef false
+          let started ← IO.mkRef false
+          let receive : IO (Except Nat ByteArray) := do
+            if let some r ← memo.get then return r
+            started.set true
+            if expect then Async.block (Transport.sendAll conn #[continueBytes])
+            let deadline ← Async.block (Std.Async.Selector.sleep config.lingeringTimeout)
+            let (body, how) ← readBodyIO conn config.lingeringTimeout (ByteArray.emptyWithCapacity len ++ initial)
+              deadline false (len - initial.size)
+            let res : Except Nat ByteArray := match how with
+              | .complete _ => .ok body
+              | .eof _ => .ok body
+              | .timeout => .error 408
+            if how matches .complete _ then complete.set true
+            memo.set (some res)
+            return res
+          if let some _ ← exchange a conn config client extensions rq bytes (some .empty) (some receive) then
+            let mut done ← complete.get
+            unless ← started.get do
+              -- unread: the client still sends it, unless it waits for 100 Continue
+              unless expect do
+                let sink ← IO.mkRef ByteArray.empty
+                done := (← readInto conn config.lingeringTimeout sink false
+                  (← Std.Async.Selector.sleep config.lingeringTimeout) false (len - initial.size)) matches .complete _
+            if done then serveRequests a conn config client extensions fuel rest false
 
 /-- Serve one connection (`serveRequests`), then close it. -/
 def serveOne [Transport t] (a : Application) (conn : t) (config : Std.Http.Config)

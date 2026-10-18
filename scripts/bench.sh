@@ -13,5 +13,8 @@ lake build bench
 for c in url200k urlValue20m mpValue20m mpFields50k mpFile50m chunked20m chunkedMpFile50m expectMpFile10m; do
   ./.lake/build/bin/bench formmem "$c"
 done
+for c in post10m-404 post10m-read post20m-404 post20m-read; do
+  ./.lake/build/bin/bench bodybench "$c"
+done
 ./.lake/build/bin/bench m5bench
 echo "bench bounds held"

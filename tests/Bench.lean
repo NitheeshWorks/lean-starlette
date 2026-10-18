@@ -450,6 +450,65 @@ def m5Bench (only : String) : IO UInt32 := do
         (out.stdout.startsWith "200" && back)) && ok
   return if ok then 0 else 1
 
+/-! ## Large request bodies over TCP, against twice uvicorn + Starlette
+
+`tests/golden/body-bench-starlette-1.8.0.json` (`record_body_bench.py`):
+the same POSTs (curl, `Expect:` off) to a fresh server, best of 5 after a
+first run, and the server's peak resident memory during the 5 less its
+resident memory before them (the high-water mark reset after the first run). -/
+
+/-- A field of `/proc/<pid>/status`, in KB. -/
+def statusKB (pid : String) (key : String) : IO Nat := do
+  let s ← IO.FS.readFile s!"/proc/{pid}/status"
+  for line in s.splitOn "\n" do
+    if line.startsWith (key ++ ":") then
+      return ((line.drop (key.length + 1)).trimAscii.toString.takeWhile Char.isDigit).toNat!
+  return 0
+
+def bodyBenchApp : Application := Starlette (routes := [
+  Route "/len" (fun (r : Request) => PlainTextResponse (toString r.bodyBytes.size)) (methods := ["POST"])])
+
+def mib1 : Nat := 1024 * 1024
+
+/-- One body case: the server is a child process (`bench bodyserve`), so its
+memory is the server's alone, as uvicorn's is in the recorder. -/
+def bodyBench (name : String) : IO UInt32 := do
+  let g ← IO.FS.readBinFile "tests/golden/body-bench-starlette-1.8.0.json"
+  let some j := (LeanJson.from_json g).toOption.map (·.val) | IO.println "bad golden"; return 2
+  let some e := (j.getObjVal? "cases").bind (·.getObjVal? name) | IO.println s!"unknown case {name}"; return 2
+  let mib := (((e.getObjVal? "mib").bind Json.getInt?).getD 0).toNat
+  let route := ((e.getObjVal? "route").bind Json.getStr?).getD "/"
+  let want := toString (((e.getObjVal? "status").bind Json.getInt?).getD 0)
+  let upUs := goldenUs ((e.getObjVal? "upstream_warm_ms").getD .null)
+  let upKB := goldenUs ((e.getObjVal? "upstream_rss_mb").getD .null) * 1024 / 1000
+  let dir ← IO.FS.createTempDir
+  let path := dir / "body.bin"
+  IO.FS.withFile path .write fun h => for _ in [0:mib] do h.write (xBytes mib1)
+  let port : Nat := 18781
+  let child ← IO.Process.spawn { cmd := (← IO.appPath).toString, args := #["bodyserve", toString port] }
+  let pid := toString child.pid
+  IO.sleep 500
+  let args := #["-s", "-o", "/dev/null", "-w", "%{http_code}", "-H", "Expect:", "--data-binary", s!"@{path}",
+    s!"http://127.0.0.1:{port}{route}"]
+  -- one run to warm up, then the high-water mark is reset (`clear_refs`)
+  let _ ← IO.Process.output { cmd := "curl", args }
+  IO.FS.writeFile s!"/proc/{pid}/clear_refs" "5"
+  let base ← statusKB pid "VmRSS"
+  let (us, out) ← bestOf5 fun _ => IO.Process.output { cmd := "curl", args }
+  let peak ← statusKB pid "VmHWM"
+  child.kill
+  let _ ← child.wait
+  IO.FS.removeDirAll dir
+  let rssKB := peak - min peak base
+  -- twice upstream; for a body the application does not read (a 404, which
+  -- uvicorn discards as it arrives, at +0-0.5 MB) the floor is twice the
+  -- body: this server's cost there is fixed per request (its threads' heaps),
+  -- 6-16 MB whatever the body's size
+  let memBound := 2 * max upKB (mib * 1024)
+  let ok := out.stdout == want && us ≤ 2 * upUs && rssKB ≤ memBound
+  IO.println s!"RESULT {name}: {us / 1000} ms (upstream {upUs / 1000}, bound {2 * upUs / 1000}), +{rssKB / 1024}.{(rssKB % 1024) * 10 / 1024} MB (upstream +{upKB / 1024}.{(upKB % 1024) * 10 / 1024}, bound {memBound / 1024}.{(memBound % 1024) * 10 / 1024}), status {out.stdout}{if ok then "" else "  FAIL"}"
+  return if ok then 0 else 1
+
 /-- The whole compressor and its CRC on the m5 inputs. -/
 def gzFull : IO Unit := do
   for (name, src) in gzipInputs () do
@@ -459,6 +518,8 @@ def gzFull : IO Unit := do
 
 def main (args : List String) : IO Unit := do
   if args.headD "" == "gzfull" then gzFull; return
+  if args.headD "" == "bodybench" then IO.Process.exit (← bodyBench (args.getD 1 "")).toUInt8
+  if args.headD "" == "bodyserve" then bodyBenchApp.run (port := (args.getD 1 "18781").toNat!); return
   if args.headD "" == "m5bench" then IO.Process.exit (← m5Bench (args.getD 1 "")).toUInt8
   if args.headD "" == "plainupload" then plainUpload ((args.getD 1 "20").toNat!)
   if args.headD "" == "formmem" then IO.Process.exit (← formMem (args.getD 1 "")).toUInt8

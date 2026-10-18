@@ -102,8 +102,16 @@ structure Request where
   query_string : String := ""
   headers : Headers := ⟨[], by simp⟩
   path_params : PathParams := {}
-  /-- The whole request body. -/
+  /-- The whole request body (once read: see `receive?`). -/
   bodyBytes : ByteArray := .empty
+  /-- A body still on the connection: reading it (once; later calls return
+  the same result) gives the bytes, or the status that ends the request
+  (`408` for a stalled body, `413` over `max_body_size`, `400` for bad
+  framing). The router reads it
+  into `bodyBytes` when a route matches (`Request.loadBody`), as an
+  endpoint's `await request.body()` would; a `404` or `405` leaves it unread,
+  as upstream does. -/
+  receive? : Option (IO (Except Nat ByteArray)) := none
   /-- The application's `url_path_for`, for `request.url_for`: the path and
   the route's protocol. Filled in by the application. -/
   urlPathFor : String → List (String × String) → Option (String × String) := fun _ _ => none

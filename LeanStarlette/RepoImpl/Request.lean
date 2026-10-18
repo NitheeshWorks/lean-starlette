@@ -343,7 +343,21 @@ abbrev base_url := @baseURL
 def clientOf (r : Request) : Option (String × Nat) := r.client
 
 /-- `await request.body()`. -/
-def body (r : Request) : AppM ByteArray := pure r.bodyBytes
+def body (r : Request) : AppM ByteArray :=
+  match r.receive? with
+  | some rd => do
+    match ← liftM rd with
+    | .ok b => pure b
+    | .error 408 => throw (.http 408 "Request Timeout" [] (by decide))
+    | .error 413 => throw (.http 413 "Content Too Large" [] (by decide))
+    | .error _ => throw (.http 400 "Bad Request" [] (by decide))
+  | none => pure r.bodyBytes
+
+/-- The request with its body read into `bodyBytes`. -/
+def loadBody (r : Request) : AppM Request :=
+  match r.receive? with
+  | some _ => do pure { r with bodyBytes := ← r.body, receive? := none }
+  | none => pure r
 
 /-- The body parsed as JSON, or the parse error (lean-json's error, which
 also reports nesting beyond its depth limit). -/
@@ -353,7 +367,8 @@ def json? (r : Request) : Except LeanJson.JsonError LeanJson.Json :=
 /-- `await request.json()`. A body that is not JSON is a `400 Bad Request`
 (`HTTPException`), not a crash: upstream lets `json.loads` raise, which
 becomes a 500, and a deeply nested body there is a `RecursionError`. -/
-def json (r : Request) : AppM LeanJson.Json :=
+def json (r : Request) : AppM LeanJson.Json := do
+  let r ← r.loadBody
   match r.json? with
   | .ok v => pure v
   | .error e => throw (.http 400 s!"Invalid JSON: {e.description}" [] (by decide))

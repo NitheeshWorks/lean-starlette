@@ -115,7 +115,9 @@ abbrev url_path_for := @urlPathFor
 def bodyLimit (limit : Option Nat) (app : App) : App := fun req =>
   match limit with
   | some n =>
-    if req.bodyBytes.size > n then pure (PlainTextResponse "Content Too Large" (status_code := 413))
+    -- a body still on the connection is measured by its Content-Length
+    let declared := if req.receive?.isSome then ((req.headers.get? "content-length").bind String.toNat?).getD 0 else 0
+    if req.bodyBytes.size > n || declared > n then pure (PlainTextResponse "Content Too Large" (status_code := 413))
     else app req
   | none => app req
 
