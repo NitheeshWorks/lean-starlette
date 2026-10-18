@@ -19,6 +19,12 @@
     name = "conformance"
     root = "tests.Conformance"
 
+    # Peak memory for a large JSON body end to end (not a default target):
+    # `lake build bench && /usr/bin/time -v .lake/build/bin/bench array 20`.
+    [[lean_exe]]
+    name = "bench"
+    root = "tests.Bench"
+
 [[require]]
 name = "LeanJson"
 git = "https://github.com/NitheeshWorks/lean-json"

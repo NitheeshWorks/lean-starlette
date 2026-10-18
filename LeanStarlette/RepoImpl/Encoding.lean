@@ -51,21 +51,23 @@ def utf8Value (lead : UInt8) (conts : List UInt8) : Nat :=
   conts.foldl (fun acc c => acc * 64 + c.toNat % 64) init
 
 /-- `bytes.decode("utf-8", errors="replace")`: each maximal ill-formed
-subpart becomes U+FFFD. -/
-def decodeUtf8 (bs : List UInt8) : List Char :=
-  match bs with
-  | [] => []
-  | b :: rest =>
-    if b.toNat < 0x80 then Char.ofNat b.toNat :: decodeUtf8 rest
-    else match utf8Lead b with
-      | none => '�' :: decodeUtf8 rest
-      | some (need, lo, hi) =>
-        let k := contRun lo hi need rest
-        have : rest.length - k ≤ rest.length := by omega
-        if k = need then Char.ofNat (utf8Value b (rest.take k)) :: decodeUtf8 (rest.drop k)
-        else '�' :: decodeUtf8 (rest.drop k)
-termination_by bs.length
-decreasing_by all_goals (simp; try omega)
+subpart becomes U+FFFD. Tail-recursive on the bytes left. -/
+def decodeUtf8 (bs : List UInt8) : List Char := go [] bs
+where
+  go (acc : List Char) (bs : List UInt8) : List Char :=
+    match bs with
+    | [] => acc.reverse
+    | b :: rest =>
+      if b.toNat < 0x80 then go (Char.ofNat b.toNat :: acc) rest
+      else match utf8Lead b with
+        | none => go ('\uFFFD' :: acc) rest
+        | some (need, lo, hi) =>
+          let k := contRun lo hi need rest
+          have : rest.length - k ≤ rest.length := by omega
+          if k = need then go (Char.ofNat (utf8Value b (rest.take k)) :: acc) (rest.drop k)
+          else go ('\uFFFD' :: acc) (rest.drop k)
+  termination_by bs.length
+  decreasing_by all_goals (simp; try omega)
 
 /-! ## Percent-decoding -/
 
@@ -75,24 +77,29 @@ inductive PctTok where
   | byte (b : UInt8)
   | char (c : Char)
 
-/-- Read `%XX` escapes (an invalid one is kept literally, as Python does). -/
-def pctTokens : List Char → List PctTok
-  | [] => []
-  | '%' :: a :: b :: rest =>
-    match hexVal? a, hexVal? b with
-    | some x, some y => .byte (UInt8.ofNat (x * 16 + y)) :: pctTokens rest
-    | _, _ => .char '%' :: pctTokens (a :: b :: rest)
-  | c :: rest => .char c :: pctTokens rest
+/-- Read `%XX` escapes (an invalid one is kept literally, as Python does),
+in one left-to-right pass. -/
+def pctTokens (s : List Char) : List PctTok := go [] s
+where
+  go (acc : List PctTok) : List Char → List PctTok
+    | [] => acc.reverse
+    | '%' :: a :: b :: rest =>
+      match hexVal? a, hexVal? b with
+      | some x, some y => go (.byte (UInt8.ofNat (x * 16 + y)) :: acc) rest
+      | _, _ => go (.char '%' :: acc) (a :: b :: rest)
+    | c :: rest => go (.char c :: acc) rest
 
-/-- Decode each run of bytes as UTF-8 and keep the characters between. -/
-def pctDecode (pending : List UInt8) : List PctTok → List Char
-  | [] => decodeUtf8 pending.reverse
-  | .byte b :: ts => pctDecode (b :: pending) ts
-  | .char c :: ts => decodeUtf8 pending.reverse ++ c :: pctDecode [] ts
+/-- Decode each run of bytes as UTF-8 and keep the characters between.
+`out` is the reversed output so far, `pending` the reversed bytes of the
+current run. -/
+def pctDecode (out : List Char) (pending : List UInt8) : List PctTok → List Char
+  | [] => (decodeUtf8 pending.reverse).reverse ++ out |>.reverse
+  | .byte b :: ts => pctDecode out (b :: pending) ts
+  | .char c :: ts => pctDecode (c :: ((decodeUtf8 pending.reverse).reverse ++ out)) [] ts
 
 /-- `urllib.parse.unquote(s)`: runs of valid `%XX` escapes are decoded as
 UTF-8 (with replacement); everything else is kept. -/
-def unquoteList (s : List Char) : List Char := pctDecode [] (pctTokens s)
+def unquoteList (s : List Char) : List Char := pctDecode [] [] (pctTokens s)
 
 def unquote (s : String) : String := String.ofList (unquoteList s.toList)
 

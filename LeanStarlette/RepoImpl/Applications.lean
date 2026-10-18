@@ -1,4 +1,5 @@
 import LeanStarlette.RepoImpl.Routing
+import LeanStarlette.RepoImpl.FileIO
 
 /-!
 # RepoImpl: exception middleware and the application stack
@@ -116,7 +117,10 @@ def app (a : Application) : App := fun req =>
   let isServer : ExceptionKey → Bool := fun k => k == .status 500 || k == .exception
   let errorHandler := (a.exception_handlers.find? (isServer ·.1)).map (·.2)
   let handlers := a.exception_handlers.filter (!isServer ·.1)
-  let inner := exceptionMiddleware handlers (routerApp a.routes a.redirect_slashes)
+  let router : App := fun req => do
+    let r ← routerApp a.routes a.redirect_slashes req
+    liftM (prepareFile req r)
+  let inner := exceptionMiddleware handlers router
   let stack := a.middleware.foldr (fun m acc => m acc) inner
   let stack := serverErrorMiddleware errorHandler a.debug (bodyLimit a.max_body_size stack)
   stack { req with urlPathFor := fun n ps => (urlPathForList a.routes n ps).map fun u => (u.path, u.protocol) }

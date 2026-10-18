@@ -1,0 +1,2 @@
+# <FullyQualifiedName> <reason>. See STYLE.md section 3.
+LeanStarlette.acceptLoop The server's accept loop: a server accepts connections until the process stops, so the loop is unbounded by nature (STYLE.md section 3). It only accepts, takes a connection permit and spawns serveOne, which is total (head reading is well-founded on the byte budget, the exchange is Std.Http's).

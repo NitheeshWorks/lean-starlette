@@ -27,8 +27,8 @@ open Keel
 /-! ## First match, 405, 404 and the slash redirect -/
 
 /-- **First match.** -/
-theorem route_first_match (rs : List BaseRoute) (b : Bool) (req : Request) (c : Child) :
-    Router.resolve rs b req = .found c ↔
+theorem route_first_match (rs : List BaseRoute) (b : Bool) (req : Request) (p : AllowPolicy) (c : Child) :
+    Router.resolve rs b req p = .found c ↔
       ∃ pre r post, rs = pre ++ r :: post ∧ r.matches req = .full c ∧
         ∀ r' ∈ pre, ¬ (r'.matches req).IsFull := by
   have hf := dispatch_found_iff (β := fun _ => Child) (BaseRoute.matches req) rs
@@ -59,7 +59,7 @@ theorem route_first_match (rs : List BaseRoute) (b : Bool) (req : Request) (c : 
 `Method Not Allowed` exactly when no route matches fully and some route
 matches the path but not the method; `Allow` is then `allowOf`. -/
 theorem partial_iff_405 (rs : List BaseRoute) (b : Bool) (req : Request) (allow : List String) :
-    Router.resolve rs b req = .methodNotAllowed allow ↔
+    Router.resolve rs b req .unionOfPartials = .methodNotAllowed allow ↔
       (∀ r ∈ rs, ¬ (r.matches req).IsFull) ∧ (∃ r ∈ rs, r.matches req = .partial) ∧
         allow = allowOf rs req := by
   have hp := dispatch_partial_iff (β := fun _ => Child) (BaseRoute.matches req) rs
@@ -121,8 +121,8 @@ theorem mem_allowOf (rs : List BaseRoute) (req : Request) (m : String) :
 
 /-- **`redirect_slashes`**: with no match, the router redirects exactly when
 the path with its trailing slash toggled would match, to that URL. -/
-theorem redirect_slashes_307 (rs : List BaseRoute) (b : Bool) (req : Request) (url : String) :
-    Router.resolve rs b req = .redirect url ↔
+theorem redirect_slashes_307 (rs : List BaseRoute) (b : Bool) (req : Request) (p : AllowPolicy) (url : String) :
+    Router.resolve rs b req p = .redirect url ↔
       (∀ r ∈ rs, r.matches req = .none) ∧ b = true ∧ req.routePath ≠ "/" ∧
         (∃ r ∈ rs, (r.matches (toggleSlash req)).isNone = false) ∧
         url = toString (toggleSlash req).url := by
@@ -148,8 +148,8 @@ theorem redirect_slashes_307 (rs : List BaseRoute) (b : Bool) (req : Request) (u
     exact ⟨⟨h2, h3⟩, h4⟩
 
 /-- **No match is a 404**, unless the slash redirect applies. -/
-theorem no_match_404 (rs : List BaseRoute) (b : Bool) (req : Request) :
-    Router.resolve rs b req = .notFound ↔
+theorem no_match_404 (rs : List BaseRoute) (b : Bool) (req : Request) (p : AllowPolicy) :
+    Router.resolve rs b req p = .notFound ↔
       (∀ r ∈ rs, r.matches req = .none) ∧
         ¬ (b = true ∧ req.routePath ≠ "/" ∧ ∃ r ∈ rs, (r.matches (toggleSlash req)).isNone = false) := by
   have hn := dispatch_none_iff (β := fun _ => Child) (BaseRoute.matches req) rs
@@ -175,12 +175,15 @@ theorem no_match_404 (rs : List BaseRoute) (b : Bool) (req : Request) :
 
 /-! ## HEAD implies GET -/
 
-/-- **HEAD implies GET**: a route that allows `GET` matches a `HEAD`
-request exactly as the same request with `GET`. -/
-theorem head_implies_get (r : BaseRoute) (req : Request) (hg : r.allows "GET" = true) :
+/-- **HEAD implies GET**: a route that adds `HEAD` to `GET` (every `Route`;
+see `route_head_implies_get`) and allows `GET` matches a `HEAD` request
+exactly as the same request with `GET`. -/
+theorem head_implies_get (r : BaseRoute) (req : Request) (ha : r.autoHead = true)
+    (hg : r.allows "GET" = true) :
     r.matches { req with method := "HEAD" } = r.matches { req with method := "GET" } := by
   cases r with
-  | route p rt n err hh =>
+  | route p rt n err ah hh0 =>
+    have hh := hh0 ha
     have hh' : rt.allows "HEAD" = true := by
       simp only [BaseRoute.allows, Keel.Route.allows] at hg ⊢
       split at hg
@@ -190,6 +193,25 @@ theorem head_implies_get (r : BaseRoute) (req : Request) (hg : r.allows "GET" = 
     simp only [BaseRoute.allows] at hg
     simp only [BaseRoute.matches, Keel.Route.matches, Request.routePath, hg, hh']
   | mount => simp [BaseRoute.matches, Request.routePath]
+
+/-- Every `Route` adds `HEAD` to `GET`. -/
+theorem route_autoHead {α : Type} [ToApp α] (p : String) (e : α) (ms : List String) (n : String) :
+    (Route p e ms n).autoHead = true := rfl
+
+/-- **HEAD implies GET, for `Route`**: a `Route` that allows `GET` matches a
+`HEAD` request exactly as the same request with `GET`. -/
+theorem route_head_implies_get {α : Type} [ToApp α] (p : String) (e : α) (ms : List String)
+    (n : String) (req : Request) (hg : (Route p e ms n).allows "GET" = true) :
+    (Route p e ms n).matches { req with method := "HEAD" } =
+      (Route p e ms n).matches { req with method := "GET" } :=
+  head_implies_get _ req (route_autoHead p e ms n) hg
+
+/-- **`RouteExact` allows exactly its declared methods**, upper-cased and each
+once; `HEAD` is not added (FastAPI's `APIRoute`). -/
+theorem routeExact_methods {α : Type} [ToApp α] (p : String) (e : α) (ms : List String) (n : String) :
+    (RouteExact p e ms n).methodsOf = dedup (ms.map upperAscii) := by
+  simp only [RouteExact, BaseRoute.methodsOf]
+  split <;> simp_all
 
 /-- `Route` adds `HEAD` to `GET`, so every route it builds satisfies the
 hypothesis of `head_implies_get` with `HEAD` allowed. -/

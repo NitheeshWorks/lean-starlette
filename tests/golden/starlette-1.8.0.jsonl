@@ -1,0 +1,20 @@
+{"method": "GET", "url": "/", "body": null, "status": 200, "headers": {"content-type": "text/plain; charset=utf-8", "content-length": "12"}, "content": "Hello, world"}
+{"method": "HEAD", "url": "/", "body": null, "status": 200, "headers": {"content-type": "text/plain; charset=utf-8", "content-length": "12"}, "content": ""}
+{"method": "POST", "url": "/", "body": null, "status": 405, "headers": {"content-type": "text/plain; charset=utf-8", "content-length": "18", "allow": "HEAD, GET"}, "content": "Method Not Allowed"}
+{"method": "GET", "url": "/nope", "body": null, "status": 404, "headers": {"content-type": "text/plain; charset=utf-8", "content-length": "9"}, "content": "Not Found"}
+{"method": "GET", "url": "/users", "body": null, "status": 307, "headers": {"content-length": "0", "location": "http://testserver/users/"}, "content": ""}
+{"method": "GET", "url": "/users/", "body": null, "status": 200, "headers": {"content-type": "text/plain; charset=utf-8", "content-length": "9"}, "content": "All users"}
+{"method": "GET", "url": "/users/tom", "body": null, "status": 200, "headers": {"content-type": "text/plain; charset=utf-8", "content-length": "8"}, "content": "User tom"}
+{"method": "GET", "url": "/users/tom/", "body": null, "status": 307, "headers": {"content-length": "0", "location": "http://testserver/users/tom"}, "content": ""}
+{"method": "GET", "url": "/items/42?q=x", "body": null, "status": 200, "headers": {"content-type": "application/json", "content-length": "22"}, "content": "{\"item_id\":42,\"q\":\"x\"}"}
+{"method": "GET", "url": "/items/007", "body": null, "status": 200, "headers": {"content-type": "application/json", "content-length": "22"}, "content": "{\"item_id\":7,\"q\":null}"}
+{"method": "GET", "url": "/items/abc", "body": null, "status": 404, "headers": {"content-type": "text/plain; charset=utf-8", "content-length": "9"}, "content": "Not Found"}
+{"method": "GET", "url": "/echo/a/b?x=1&x=2&y=%ZZ&z", "body": null, "status": 200, "headers": {"content-type": "application/json", "content-length": "71"}, "content": "{\"query\":[[\"x\",\"1\"],[\"x\",\"2\"],[\"y\",\"%ZZ\"],[\"z\",\"\"]],\"path\":\"/echo/a/b\"}"}
+{"method": "GET", "url": "/echo/%E2%82%AC?q=a+b", "body": null, "status": 200, "headers": {"content-type": "application/json", "content-length": "42"}, "content": "{\"query\":[[\"q\",\"a b\"]],\"path\":\"/echo/€\"}"}
+{"method": "POST", "url": "/create", "body": "{\"a\": [1, 2.5, null, \"é\"]}", "status": 201, "headers": {"content-type": "application/json", "content-length": "23"}, "content": "{\"a\":[1,2.5,null,\"é\"]}"}
+{"method": "POST", "url": "/create", "body": "{", "status": 500, "headers": {"content-type": "text/plain; charset=utf-8", "content-length": "21"}, "content": "Internal Server Error"}
+{"method": "GET", "url": "/teapot", "body": null, "status": 418, "headers": {"content-type": "text/plain; charset=utf-8", "content-length": "12", "x-tea": "earl grey"}, "content": "I'm a teapot"}
+{"method": "GET", "url": "/nobody", "body": null, "status": 204, "headers": {}, "content": ""}
+{"method": "GET", "url": "/html", "body": null, "status": 200, "headers": {"content-type": "text/html; charset=utf-8", "content-length": "11"}, "content": "<h1>Hi</h1>"}
+{"method": "GET", "url": "/old", "body": null, "status": 307, "headers": {"content-length": "0", "location": "/new%20place"}, "content": ""}
+{"method": "PUT", "url": "/items/1", "body": null, "status": 405, "headers": {"content-type": "text/plain; charset=utf-8", "content-length": "18", "allow": "HEAD, GET"}, "content": "Method Not Allowed"}

@@ -1,4 +1,5 @@
 import LeanStarlette.RepoImpl.Request
+import LeanStarlette.RepoImpl.Background
 
 /-!
 # RepoImpl: responses
@@ -54,9 +55,10 @@ theorem allowedBody_ok (status : Nat) (body : ByteArray) :
 
 /-- `Response(content, status_code, headers, media_type)`. -/
 def Response.make (content : Content) (status_code : Nat) (headers : List (String × String))
-    (media_type : Option String) (h : StatusCode.Valid status_code) : Response :=
+    (media_type : Option String) (h : StatusCode.Valid status_code) (background : BackgroundTasks := {}) :
+    Response :=
   let body := allowedBody status_code content.bytes
-  { status_code, body, h_status := h, h_body := allowedBody_ok _ _
+  { status_code, body, h_status := h, h_body := allowedBody_ok _ _, background
     headers := initHeaders status_code body headers media_type }
 
 /-! ## Starlette's response classes, as functions -/
@@ -64,21 +66,23 @@ namespace Responses
 
 /-- `Response(content=b"", status_code=200, headers=None, media_type=None)`. -/
 def Response (content : Content := {}) (status_code : Nat := 200) (headers : List (String × String) := [])
-    (media_type : Option String := none) (h : StatusCode.Valid status_code := by decide) :
-    LeanStarlette.Response :=
-  .make content status_code headers media_type h
+    (media_type : Option String := none) (background : BackgroundTasks := {})
+    (h : StatusCode.Valid status_code := by decide) : LeanStarlette.Response :=
+  .make content status_code headers media_type h background
 
 /-- `PlainTextResponse(content, ...)`: `text/plain; charset=utf-8`. -/
 def PlainTextResponse (content : Content := {}) (status_code : Nat := 200)
     (headers : List (String × String) := []) (media_type : String := "text/plain")
-    (h : StatusCode.Valid status_code := by decide) : LeanStarlette.Response :=
-  .make content status_code headers (some media_type) h
+    (background : BackgroundTasks := {}) (h : StatusCode.Valid status_code := by decide) :
+    LeanStarlette.Response :=
+  .make content status_code headers (some media_type) h background
 
 /-- `HTMLResponse(content, ...)`: `text/html; charset=utf-8`. -/
 def HTMLResponse (content : Content := {}) (status_code : Nat := 200)
     (headers : List (String × String) := []) (media_type : String := "text/html")
-    (h : StatusCode.Valid status_code := by decide) : LeanStarlette.Response :=
-  .make content status_code headers (some media_type) h
+    (background : BackgroundTasks := {}) (h : StatusCode.Valid status_code := by decide) :
+    LeanStarlette.Response :=
+  .make content status_code headers (some media_type) h background
 
 /-- The bytes `JSONResponse` sends for a value: `json.dumps(content,
 ensure_ascii=False, allow_nan=False, indent=None, separators=(",", ":"))`.
@@ -96,9 +100,10 @@ which `ServerErrorMiddleware` turns into a 500), so the response is that
 `500 Internal Server Error`. -/
 def JSONResponse {α : Type} [LeanJson.IntoJson α] (content : α) (status_code : Nat := 200)
     (headers : List (String × String) := []) (media_type : String := "application/json")
-    (h : StatusCode.Valid status_code := by decide) : LeanStarlette.Response :=
+    (background : BackgroundTasks := {}) (h : StatusCode.Valid status_code := by decide) :
+    LeanStarlette.Response :=
   match jsonRender (LeanJson.intoJson content) with
-  | .ok body => .make body status_code headers (some media_type) h
+  | .ok body => .make body status_code headers (some media_type) h background
   | .error _ => .make "Internal Server Error" 500 [] (some "text/plain") (by decide)
 
 /-- The characters `RedirectResponse` leaves unquoted in `location`. -/
@@ -106,13 +111,40 @@ def redirectSafe : List Char := ":/%#?=@[]!$&'()*+,;".toList
 
 /-- `RedirectResponse(url, status_code=307, headers=None)`. -/
 def RedirectResponse (url : String) (status_code : Nat := 307) (headers : List (String × String) := [])
-    (h : StatusCode.Valid status_code := by decide) : LeanStarlette.Response :=
-  let r := LeanStarlette.Response.make {} status_code headers none h
+    (background : BackgroundTasks := {}) (h : StatusCode.Valid status_code := by decide) :
+    LeanStarlette.Response :=
+  let r := LeanStarlette.Response.make {} status_code headers none h background
   { r with headers := r.headers.set "location" (quote url redirectSafe) }
+
+/-- `StreamingResponse(content, status_code=200, headers=None,
+media_type=None, background=None)`. The body is produced chunk by chunk as
+it is sent; there is no `content-length` (upstream's `init_headers` has no
+body to measure), so HTTP/1.1 sends it chunked. -/
+def StreamingResponse (content : ContentStream) (status_code : Nat := 200)
+    (headers : List (String × String) := []) (media_type : Option String := none)
+    (background : BackgroundTasks := {}) (h : StatusCode.Valid status_code := by decide) :
+    LeanStarlette.Response :=
+  let hs := Headers.ofList headers
+  let hs := match media_type with
+    | some mt => if hs.contains "content-type" then hs else hs.append "content-type" (contentType mt)
+    | none => hs
+  { status_code, headers := hs, body := .empty, h_status := h, h_body := .inr rfl,
+    stream := some content, background }
 
 end Responses
 
-export Responses (Response PlainTextResponse HTMLResponse JSONResponse RedirectResponse)
+export Responses (Response PlainTextResponse HTMLResponse JSONResponse RedirectResponse StreamingResponse)
+
+namespace ContentStream
+
+/-- A stream of the given chunks (an `Iterable[bytes]`). -/
+def ofList (chunks : List ByteArray) : ContentStream := fun send => chunks.forM send
+
+/-- A stream of text chunks, encoded as UTF-8 (upstream encodes `str`
+chunks with the response charset). -/
+def ofStrings (chunks : List String) : ContentStream := ofList (chunks.map String.toUTF8)
+
+end ContentStream
 
 /-! ## Accessors -/
 namespace Response

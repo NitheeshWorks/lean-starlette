@@ -65,7 +65,9 @@ def sendFollow (app : Application) (headers : List (String × String)) (follow :
     Nat → String → URL → ByteArray → IO TestResponse
   | fuel, method, u, content => do
     let r ← app.call (mkRequest method u headers content)
-    let body := if method == "HEAD" then ByteArray.empty else r.body
+    let full ← r.readBody
+    r.background.run
+    let body := if method == "HEAD" then ByteArray.empty else full
     let resp : TestResponse := ⟨r.status_code, r.headers, body, toString u⟩
     match fuel with
     | 0 => pure resp
@@ -150,6 +152,11 @@ def routingCases : List Case := [
     let allow := ((r.headers.get? "allow").getD "").splitOn ", "
     ok (r.status_code == 405 && r.text == "Method Not Allowed" && allow.length == 2 &&
       allow.contains "GET" && allow.contains "HEAD")⟩,
+  ⟨"fastapi.routing.APIRoute (measured: HEAD on @app.get is 405, allow: GET)", "RouteExact: HEAD on a GET route is 405 with Allow GET", do
+    let app := Starlette (routes := [RouteExact "/items" (fun (_ : Request) => PlainTextResponse "ok") (methods := ["get"])])
+    let r ← TestClient.request app "HEAD" "/items"
+    let r2 ← TestClient.get app "/items"
+    ok (r.status_code == 405 && r.headers.get? "allow" == some "GET" && r2.status_code == 200 && r2.text == "ok")⟩,
   ⟨"tests/test_routing.py::test_router", "GET /foo is 404", do
     let r ← TestClient.get routingApp "/foo"
     ok (r.status_code == 404 && r.text == "Not Found")⟩,
@@ -486,7 +493,7 @@ def appApp : Application := Starlette
     (500, fun _ _ => pure (JSONResponse (json% {"detail": "Server Error"}) (status_code := 500))),
     (405, fun _ _ => pure (JSONResponse (json% {"detail": "Custom message"}) (status_code := 405))),
     (.httpException, fun _ e => match e with
-      | .http s d _ h => pure (JSONResponse (json% {"detail": (d)}) s [] "application/json" h)
+      | .http s d _ h => pure (JSONResponse (json% {"detail": (d)}) s (h := h))
       | e => throw e)])
 
 def error500 : ExceptionHandler := fun _ _ =>
@@ -564,15 +571,228 @@ def transportCases : List Case := [
     ok (out.startsWith "HTTP/1.1 404")⟩
 ]
 
+/-! ## Over a real socket
+
+`Application.run` on a local port, driven with raw bytes. Expected values
+were measured against uvicorn 0.54 (httptools) serving the same app under
+Starlette 1.8.0; where lean-starlette answers differently it is a recorded
+deviation (`docs/traceability.toml`, `transport.limits`). -/
+
+open Std.Async Std.Async.TCP in
+/-- Send raw bytes to `127.0.0.1:port` and read the response until the
+server closes the connection. -/
+def sendRaw (port : Nat) (raw : ByteArray) : IO String := do
+  let res ← Async.block do
+    let c ← (Socket.Client.mk : IO Socket.Client)
+    c.connect (.v4 ⟨(Std.Net.IPv4Addr.ofString "127.0.0.1").get!, port.toUInt16⟩)
+    -- send concurrently: a server may answer and close before reading it all
+    background (try c.sendAll #[raw] catch _ => pure ())
+    let rec loop (acc : ByteArray) : Nat → Async ByteArray
+      | 0 => pure acc
+      | n + 1 => do
+        match ← (try c.recv? 65536 catch _ => pure none) with
+        | some d => if d.size == 0 then pure acc else loop (acc ++ d) n
+        | none => pure acc
+    loop .empty 100000
+  return (String.fromUTF8? res).getD ""
+
+def echoParts (r : Request) : Response :=
+  JSONResponse (json% {"n_query": (r.queryParams.multiItems.length), "n_headers": (r.headers.raw.length),
+    "q": (String.ofList ((toString r.queryParams).toList.take 20))})
+
+def socketApp : Application := Starlette (routes := [Route "/{p:path}" echoParts (methods := ["GET", "POST"])])
+
+def socketPort : Nat := 18731
+
+def getRaw (target : String) (headers : List String := []) : ByteArray :=
+  (s!"GET {target} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n" ++
+    String.join (headers.map (· ++ "\r\n")) ++ "\r\n").toUTF8
+
+def manyHeaders (n : Nat) : List String := (List.range n).map fun i => s!"x-h{i}: v"
+
+def statusIs (out : String) (code : String) : Bool := out.startsWith s!"HTTP/1.1 {code}"
+def has (out t : String) : Bool := (out.splitOn t).length > 1
+
+def socketCases : List Case := [
+  ⟨"uvicorn+starlette: 101 query parameters are 200 [socket]", "101 query parameters", do
+    let q := "&".intercalate ((List.range 101).map fun i => s!"k{i}=1")
+    let out ← sendRaw socketPort (getRaw s!"/a?{q}")
+    ok (statusIs out "200" && has out "\"n_query\":101")⟩,
+  ⟨"uvicorn+starlette (fastapi review): 150 query parameters are 200 [socket]", "150 query parameters", do
+    let q := "&".intercalate ((List.range 150).map fun i => s!"k{i}=1")
+    let out ← sendRaw socketPort (getRaw s!"/a?{q}")
+    ok (statusIs out "200" && has out "\"n_query\":150")⟩,
+  ⟨"uvicorn+starlette: 1000 query parameters are 200 [socket]", "1000 query parameters", do
+    let q := "&".intercalate ((List.range 1000).map fun i => s!"k{i}=1")
+    let out ← sendRaw socketPort (getRaw s!"/a?{q}")
+    ok (statusIs out "200" && has out "\"n_query\":1000")⟩,
+  ⟨"uvicorn+starlette: ?a=%ZZ is 200, kept as text [socket]", "an invalid escape", do
+    let out ← sendRaw socketPort (getRaw "/a?a=%ZZ")
+    ok (statusIs out "200" && has out "\"q\":\"a=%25ZZ\"")⟩,
+  ⟨"uvicorn+starlette: 60 headers are 200 [socket]", "60 headers", do
+    let out ← sendRaw socketPort (getRaw "/a" (manyHeaders 60))
+    ok (statusIs out "200" && has out "\"n_headers\":62")⟩,
+  ⟨"uvicorn+starlette: 2000 headers are 200 [socket]", "2000 headers", do
+    let out ← sendRaw socketPort (getRaw "/a" (manyHeaders 2000))
+    ok (statusIs out "200" && has out "\"n_headers\":2002")⟩,
+  ⟨"uvicorn+starlette: a 70 KB header value is 200 [socket]", "a 70 KB header value", do
+    let out ← sendRaw socketPort (getRaw "/a" [s!"x: {String.ofList (List.replicate 70000 'v')}"])
+    ok (statusIs out "200")⟩,
+  ⟨"uvicorn+starlette: a 65535-byte target is 200 [socket]", "the longest target", do
+    let out ← sendRaw socketPort (getRaw ("/" ++ String.ofList (List.replicate 65534 'a')))
+    ok (statusIs out "200")⟩,
+  ⟨"transport.limits (uvicorn: 400): a 65536-byte target is 414 [socket]", "one byte longer is 414", do
+    let out ← sendRaw socketPort (getRaw ("/" ++ String.ofList (List.replicate 65535 'a')))
+    ok (statusIs out "414" && out.endsWith "URI Too Long")⟩,
+  ⟨"uvicorn (httptools: 200; h11 0.16: 200) a head of 16 KiB - 1 is 200 [socket]", "just under h11's 16 KiB", do
+    let raw := getRaw "/a" [s!"x: {String.ofList (List.replicate (16 * 1024 - 1 - (getRaw "/a" ["x: "]).size) 'v')}"]
+    let out ← sendRaw socketPort raw
+    ok (raw.size == 16 * 1024 - 1 && statusIs out "200")⟩,
+  ⟨"transport.limits (httptools: 200; h11 0.16: 431) a head of 16 KiB + 1 is 200 [socket]", "just over h11's 16 KiB", do
+    let raw := getRaw "/a" [s!"x: {String.ofList (List.replicate (16 * 1024 + 1 - (getRaw "/a" ["x: "]).size) 'v')}"]
+    let out ← sendRaw socketPort raw
+    ok (raw.size == 16 * 1024 + 1 && statusIs out "200")⟩,
+  ⟨"transport.limits (httptools: 200) a head of exactly 1 MiB is 200 [socket]", "the largest head", do
+    let raw := getRaw "/a" [s!"x: {String.ofList (List.replicate (1024 * 1024 - (getRaw "/a" ["x: "]).size) 'v')}"]
+    let out ← sendRaw socketPort raw
+    ok (raw.size == 1024 * 1024 && statusIs out "200")⟩,
+  ⟨"transport.limits (httptools: 200; h11 0.16: 431) a head of 1 MiB + 1 is 431 [socket]", "one byte over 1 MiB", do
+    let raw := getRaw "/a" [s!"x: {String.ofList (List.replicate (1024 * 1024 + 1 - (getRaw "/a" ["x: "]).size) 'v')}"]
+    let out ← sendRaw socketPort raw
+    ok (raw.size == 1024 * 1024 + 1 && statusIs out "431" && out.endsWith "Request Header Fields Too Large")⟩,
+  ⟨"transport.limits (uvicorn: 200): a 2 MiB head is 431 [socket]", "a head over 1 MiB is 431", do
+    let out ← sendRaw socketPort (getRaw "/a" [s!"x: {String.ofList (List.replicate (2 * 1024 * 1024) 'v')}"])
+    ok (statusIs out "431" && out.endsWith "Request Header Fields Too Large")⟩,
+  ⟨"uvicorn+starlette: raw non-ASCII in the target is 400 [socket]", "raw non-ASCII", do
+    let out ← sendRaw socketPort ("GET /é HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n".toUTF8)
+    ok (statusIs out "400" && out.endsWith "Invalid HTTP request received.")⟩,
+  ⟨"uvicorn+starlette: duplicate content-length is 400 [socket]", "duplicate content-length", do
+    let out ← sendRaw socketPort ("POST /a HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\nContent-Length: 2\r\nConnection: close\r\n\r\nab".toUTF8)
+    ok (statusIs out "400" && out.endsWith "Invalid HTTP request received.")⟩,
+  ⟨"transport.limits (uvicorn: 200): no Host header is 400, as RFC 9112 requires [socket]", "no Host header", do
+    let out ← sendRaw socketPort ("GET /a HTTP/1.1\r\nConnection: close\r\n\r\n".toUTF8)
+    ok (statusIs out "400" && out.endsWith "Invalid HTTP request received.")⟩
+]
+
+/-! ## Golden responses recorded from Starlette 1.8.0 (`tests/golden/`) -/
+
+def gUser (r : Request) : Response := Response ("User " ++ toString r.pathParams["username"]!) (media_type := "text/plain")
+def gItem (r : Request) : Response :=
+  JSONResponse (json% {"item_id": (r.pathParams["item_id"]!), "q": (r.queryParams["q"]?)})
+def gEcho (r : Request) : Response :=
+  JSONResponse (Json.obj #[("query", Json.arr (r.queryParams.multiItems.map fun (k, v) =>
+    Json.arr #[.str k, .str v]).toArray), ("path", .str r.url.path)])
+def gCreate (r : Request) : AppM Response := do
+  return JSONResponse (← r.json) (status_code := 201)
+
+/-- The app `tests/golden/record.py` records, in Lean. -/
+def goldenApp : Application := Starlette (routes := [
+  Route "/" homepage (methods := ["GET"]),
+  Mount "/users" (routes := [Route "/" users, Route "/{username}" gUser]),
+  Route "/items/{item_id:int}" gItem,
+  Route "/echo/{rest:path}" gEcho,
+  Route "/create" gCreate (methods := ["POST"]),
+  Route "/teapot" (raiseHTTP (HTTPException 418 "I'm a teapot" [("X-Tea", "earl grey")])),
+  Route "/nobody" (fun (_ : Request) => Response (status_code := 204)),
+  Route "/html" (fun (_ : Request) => HTMLResponse "<h1>Hi</h1>"),
+  Route "/old" (fun (_ : Request) => RedirectResponse "/new place")])
+
+/-- Documented deviations from the recorded responses: the expected status
+here instead of upstream's. -/
+def goldenDeviations : List ((String × String × Option String) × Nat) :=
+  [(("POST", "/create", some "{"), 400)]   -- Request.json: 400, not 500 (CONTRIBUTING.md)
+
+def sameAllow (a b : String) : Bool :=
+  let xs := a.splitOn ", "; let ys := b.splitOn ", "
+  xs.length == ys.length && xs.all ys.contains
+
+def goldenCase (line : Json) : Option Case := do
+  let method ← (line.getObjVal? "method").bind Json.getStr?
+  let url ← (line.getObjVal? "url").bind Json.getStr?
+  let body := (line.getObjVal? "body").bind Json.getStr?
+  let status ← (line.getObjVal? "status").bind Json.getInt?
+  let headers := match line.getObjVal? "headers" with
+    | some (.obj kvs) => kvs.toList.filterMap fun (p : String × Json) => p.2.getStr?.map (p.1, ·)
+    | _ => []
+  let content ← (line.getObjVal? "content").bind Json.getStr?
+  pure ⟨"tests/golden/starlette-1.8.0.jsonl", s!"golden {method} {url}{if body.isSome then " (body)" else ""}", do
+    let r ← TestClient.request goldenApp method url [] ((body.getD "").toUTF8) (follow := false)
+    match goldenDeviations.lookup (method, url, body) with
+    | some st => ok (r.status_code == st)
+    | none =>
+      let hs := headers.all fun (k, v) =>
+        match r.headers.get? k with
+        | some v' => if k == "allow" then sameAllow v v' else v == v'
+        | none => false
+      let extra := ["content-type", "content-length", "location", "allow", "x-tea"].all fun k =>
+        headers.any (·.1 == k) || !r.headers.contains k
+      unless r.status_code == status.toNat && hs && extra && r.text == content do
+        IO.println s!"      got {r.status_code} {repr r.headers} {r.text.quote}"
+      ok (r.status_code == status.toNat && hs && extra && r.text == content)⟩
+
+def goldenCases : IO (List Case) := do
+  let lines ← IO.FS.lines "tests/golden/starlette-1.8.0.jsonl"
+  return lines.toList.filterMap fun l => (from_json l).toOption.bind fun j => goldenCase j.val
+
+/-! ## Numbers from request input: Python's `int()` digit limit, linear time
+
+Expected values measured on Starlette 1.8.0 / CPython 3.13
+(`FileResponse._parse_range_header(h, 1000)`, `email.utils.parsedate`). Each
+case also bounds the time, so a quadratic conversion fails here. -/
+
+def rangesOf {n : Nat} : RangeDecision n → Option (List (Nat × Nat))
+  | .ranges rs => some rs.ranges
+  | _ => none
+
+def isMalformed {n : Nat} : RangeDecision n → Bool
+  | .malformed m => m == "Range header: range must be requested"
+  | _ => false
+
+def zeroText (n : Nat) : String := String.ofList (List.replicate n '0')
+
+/-- Run `act`, failing it when it takes longer than `ms` milliseconds. -/
+def within (ms : Nat) (act : Unit → Bool) : IO Bool := do
+  let t0 ← IO.monoMsNow
+  let b := act ()
+  let t1 ← IO.monoMsNow
+  pure (b && t1 - t0 ≤ ms)
+
+def numericCases : List Case := [
+  ⟨"starlette FileResponse._parse_range_header (int(), 4300 digits)", "a 4300-digit start is read", do
+    within 50 fun _ => rangesOf (parseRangeHeader s!"bytes={zeroText 4299}5-" 1000) == some [(5, 1000)]⟩,
+  ⟨"starlette FileResponse._parse_range_header (int(), 4300 digits)", "a 4300-digit end is read", do
+    within 50 fun _ => rangesOf (parseRangeHeader s!"bytes=0-{zeroText 4299}5" 1000) == some [(0, 6)]⟩,
+  ⟨"starlette FileResponse._parse_range_header (int() ValueError)", "a 4301-digit start is ignored: malformed", do
+    within 50 fun _ => isMalformed (parseRangeHeader s!"bytes={zeroText 4300}5-" 1000)⟩,
+  ⟨"starlette FileResponse._parse_range_header (int() ValueError)", "a 4301-digit end is ignored: malformed", do
+    within 50 fun _ => isMalformed (parseRangeHeader s!"bytes=0-{zeroText 4300}5" 1000)⟩,
+  ⟨"starlette FileResponse._parse_range_header (int() ValueError)", "a 1 MiB digit run is malformed, in linear time", do
+    within 1000 fun _ => isMalformed (parseRangeHeader s!"bytes={String.ofList (List.replicate (1024 * 1024) '7')}-" 1000)⟩,
+  ⟨"email.utils.parsedate (int(), 4300 digits)", "a 4300-digit year is read", do
+    within 50 fun _ => (parseHttpDate s!"Sun, 06 Nov {zeroText 4296}1994 08:49:37 GMT").map (·.year) == some 1994⟩,
+  ⟨"email.utils.parsedate (int() ValueError)", "a 4301-digit year is None", do
+    within 50 fun _ => (parseHttpDate s!"Sun, 06 Nov {zeroText 4297}1994 08:49:37 GMT").isNone⟩,
+  ⟨"email.utils.parsedate (int() ValueError)", "a 1 MiB year is None, in linear time", do
+    within 1000 fun _ => (parseHttpDate s!"Sun, 06 Nov {String.ofList (List.replicate (1024 * 1024) '7')} 08:49:37 GMT").isNone⟩,
+  ⟨"Host header port (uvicorn: any port text)", "a 1 MiB port is refused, in linear time", do
+    within 1000 fun _ => !isValidPort (some (String.ofList (List.replicate (1024 * 1024) '7')))⟩
+]
+
 def cases : List Case :=
   routingCases ++ convertorCases ++ responseCases ++ requestCases ++ datastructureCases ++
-    exceptionCases ++ applicationCases ++ transportCases
+    exceptionCases ++ applicationCases ++ transportCases ++ numericCases
 
 def main : IO UInt32 := do
   let mut failures := 0
+  let golden ← goldenCases
+  let _ ← IO.asTask (socketApp.run (port := socketPort)) .dedicated
+  IO.sleep 1500
+  let cases := cases ++ golden ++ socketCases
   for c in cases do
     let ok ← try c.run catch e => do IO.println s!"      {e}"; pure false
     IO.println s!"{if ok then "ok  " else "FAIL"}  {c.name}  [{c.upstream}]"
+    (← IO.getStdout).flush
     unless ok do failures := failures + 1
   IO.println s!"{cases.length} cases, {failures} failing"
-  return if failures == 0 then 0 else 1
+  -- the socket server task never ends; exit explicitly
+  IO.Process.exit (if failures == 0 then 0 else 1)

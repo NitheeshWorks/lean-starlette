@@ -79,7 +79,13 @@ Listed here with the reason, and in `docs/traceability.toml` with
   for their character set, not as IPv6 addresses.
 * **The transport** (`Transport.lean`): `Std.Http` is trusted, not
   re-verified (stack plan). Tested through `Std.Http`'s in-memory
-  connection (`[std.http]` conformance cases) and by hand over TCP.
+  connection (`[std.http]` conformance cases) and over TCP (`[socket]`
+  cases, each compared with uvicorn + Starlette 1.8.0). Its one `partial`
+  is the accept loop, justified in `scripts/gate-allow.txt`.
+* **Files** (`RepoImpl/FileIO.lean`) is the second effectful module: file
+  reads and `stat` for `FileResponse` and `StaticFiles`. The decisions it
+  acts on (ranges, ETags, 304, the path under the static root) are pure, in
+  `Range.lean`, `Files.lean` and `HttpDate.lean`.
 
 ### Deviations from upstream
 
@@ -108,12 +114,63 @@ Each has a `status = "deviation"` row in `docs/traceability.toml`.
   no traceback). An `IO` error is reported as `RuntimeError`.
 * **Methods** keep their given order with `HEAD` appended after `GET`;
   upstream stores a set.
+* **Transport limits.** `Application.run` and `Application.exchange`
+  default to uvicorn's effective limits (measured against uvicorn 0.54 with
+  Starlette 1.8.0 on the same raw requests): any number of query parameters,
+  invalid percent escapes passed through to `QueryParams` (decoded as
+  Starlette does), any number of headers, targets up to 65535 bytes. Std.Http
+  hard-codes stricter URI limits (100 query parameters, strict `%XX`), so the
+  transport moves the request target into a private header
+  (`x-lean-starlette-target`, never shown to the app) before Std.Http parses
+  the head. What remains, each answered with a status and a body (row
+  `transport.limits`):
+  * a target over 65535 bytes is `414 URI Too Long` (uvicorn: `400`);
+  * a head over 1 MiB is `431`, exactly (uvicorn with httptools, its default
+    when installed, as in `uvicorn[standard]`, has no limit; uvicorn with
+    h11 0.16 answers `431` over 16 KiB, `h11._connection.DEFAULT_MAX_INCOMPLETE_EVENT_SIZE`;
+    neither limits the header count);
+  * a body over `config.maxBodySize` (64 MiB by default) or the app's
+    `max_body_size` is `413` (uvicorn has no limit);
+  * a request without `Host` is `400`, as RFC 9112 3.2 requires (uvicorn: `200`);
+  * one request per connection: keep-alive is off, because only the first
+    request line is rewritten;
+  * a head not complete within `config.headerTimeout` is `408`.
+  Pass a `Std.Http.Config` to tighten the rest.
+* **Numbers from request input** follow CPython's `int()` digit limit
+  (`sys.int_max_str_digits`, 4300; leading zeros count): a longer `Range`
+  bound is upstream's `ValueError` (the part is ignored), a longer date field
+  makes `parsedate` return `None`. The limit is checked in linear time before
+  conversion, and conversion goes 18 digits per big-number step
+  (`boundedDigits?`, `digitsValueChunked_eq`). The `Host` port is at most five
+  significant digits. JSON numbers are bounded by lean-json.
+
+### Open: cost of matching paths (lean-keel)
+
+Path matching runs on Keel.Route. Measured at Keel 6f70d3f, compiled
+(`lake build bench`): a path that does not match a template with a capture
+before a literal costs O(n²) in its length (`/s/{a}/x` against `/s/` + 65000
+characters: 75 s), and `int`/`float` captures render with a quadratic
+`Codec.decimal` (65536 digits: 11 s). Both are requested from lean-keel (card
+notes on xpnwkxj1gfz9); this repository takes the fix with `lake update Keel`.
+
+### Large JSON bodies
+
+`lake build bench && /usr/bin/time -v .lake/build/bin/bench array 20`: one
+`POST` of a 20 MB JSON array (2.6 million integers) through
+`Application.exchange` and `request.json()` peaks at 237 MB resident, 0.7 s
+(lean-json 5c4d6ad; it was 650 MB before lean-json's compact representation).
+A wide object is quadratic in its key count in lean-json 5c4d6ad (1 MB, 68k
+keys: 6 s), reported to lean-json with the cause.
 
 ## Tests
 
 * `tests/Props.lean`: seeded property tests, no dependencies, under a second.
 * `tests/Conformance.lean`: cases re-expressed from the upstream suite; each
-  names the upstream test (`tests/test_x.py::test_y`).
+  names the upstream test (`tests/test_x.py::test_y`). It also replays
+  `tests/golden/starlette-1.8.0.jsonl`: status, headers and body recorded
+  from Starlette 1.8.0's TestClient by `tests/golden/record.py` (run with
+  the upstream-spec venv; never needed to build), checked against the same
+  app written in Lean. Recorded deviations are listed in `goldenDeviations`.
 * `tests/pbt/`: a separate Lake package, the one place an external dependency
   (`plausible`) is taken.
 

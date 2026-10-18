@@ -39,16 +39,19 @@ def getlist (q : QueryParams) (key : String) : List String :=
   (q.items.filter (·.1 == key)).map (·.2)
 
 /-- `params.keys()`: each key once, in first-seen order. -/
-def keys (q : QueryParams) : List String := dedup (q.items.map (·.1))
+def keys (q : QueryParams) : List String := dedupStrings (q.items.map (·.1))
 
 /-- `params.items()`: each key once with its last value. -/
-def dictItems (q : QueryParams) : List (String × String) := q.keys.map fun k => (k, (q.get? k).getD "")
+def dictItems (q : QueryParams) : List (String × String) :=
+  let last : Std.HashMap String String := q.items.foldl (fun m p => m.insert p.1 p.2) {}
+  q.keys.map fun k => (k, last.getD k "")
 
 /-- `params.values()`. -/
 def values (q : QueryParams) : List String := q.dictItems.map (·.2)
 
 /-- `params.multi_items()`. -/
 def multiItems (q : QueryParams) : List (String × String) := q.items
+abbrev multi_items := @multiItems
 
 /-- `key in params`. -/
 def contains (q : QueryParams) (key : String) : Bool := q.items.any (·.1 == key)

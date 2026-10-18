@@ -33,11 +33,23 @@ def Route {α : Type} [ToApp α] (path : String) (endpoint : α) (methods : List
   let err := if path.startsWith "/" then err else some "Routed paths must start with '/'"
   let ms := normaliseMethods methods
   .route path { path := t, methods := if ms.isEmpty then none else some ms, endpoint := ToApp.toApp endpoint }
-    name err (by
-      intro ms' h hg
+    name err true (by
+      intro _ ms' h hg
       split at h
       · cases h
       · cases h; exact head_mem_normaliseMethods methods hg)
+
+/-- A route whose method set is exactly `methods` (upper-cased, each once):
+unlike `Route`, `GET` does not bring in `HEAD`. This is FastAPI's `APIRoute`
+rule (a `HEAD` on a `GET`-only path operation is a 405 with `allow: GET`),
+for lean-fastapi; Starlette applications use `Route`. -/
+def RouteExact {α : Type} [ToApp α] (path : String) (endpoint : α) (methods : List String := ["GET"])
+    (name : String := "") : BaseRoute :=
+  let (t, err) := compileOr path
+  let err := if path.startsWith "/" then err else some "Routed paths must start with '/'"
+  let ms := dedup (methods.map upperAscii)
+  .route path { path := t, methods := if ms.isEmpty then none else some ms, endpoint := ToApp.toApp endpoint }
+    name err false (fun h => nomatch h)
 
 /-- `Mount(path, routes=[...])` or `Mount(path, app=...)`: everything under
 `path` goes to the routes (or app), with the prefix moved into `root_path`. -/
@@ -61,7 +73,7 @@ def Starlette (debug : Bool := false) (routes : List BaseRoute := []) (middlewar
 
 end Routing
 
-export Routing (Route Mount Router Starlette)
+export Routing (Route RouteExact Mount Router Starlette)
 
 /-- A bare `App` as an application (an ASGI app passed to `TestClient`):
 every path goes to it, with the default middleware around it. -/
@@ -73,8 +85,8 @@ def Application.checkRoutes (a : Application) : List (String × String) :=
 where
   go : List BaseRoute → List (String × String)
     | [] => []
-    | .route p _ _ (some e) _ :: rs => (p, e) :: go rs
-    | .route _ _ _ none _ :: rs => go rs
+    | .route p _ _ (some e) _ _ :: rs => (p, e) :: go rs
+    | .route _ _ _ none _ _ :: rs => go rs
     | .mount p _ inner _ _ err :: rs =>
       (match err with | some e => [(p, e)] | none => []) ++ go inner ++ go rs
 

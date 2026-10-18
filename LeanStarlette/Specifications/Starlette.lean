@@ -14,8 +14,8 @@ open Keel
 
 /-- The router hands over to the first fully matching route. -/
 def RouteFirstMatch : Prop :=
-  ∀ (rs : List BaseRoute) (b : Bool) (req : Request) (c : Child),
-    Router.resolve rs b req = .found c ↔
+  ∀ (rs : List BaseRoute) (b : Bool) (req : Request) (p : AllowPolicy) (c : Child),
+    Router.resolve rs b req p = .found c ↔
       ∃ pre r post, rs = pre ++ r :: post ∧ r.matches req = .full c ∧
         ∀ r' ∈ pre, ¬ (r'.matches req).IsFull
 
@@ -23,7 +23,7 @@ def RouteFirstMatch : Prop :=
 with `Allow` the union of the partial matches' methods. -/
 def PartialIff405 : Prop :=
   ∀ (rs : List BaseRoute) (b : Bool) (req : Request) (allow : List String),
-    Router.resolve rs b req = .methodNotAllowed allow ↔
+    Router.resolve rs b req .unionOfPartials = .methodNotAllowed allow ↔
       (∀ r ∈ rs, ¬ (r.matches req).IsFull) ∧ (∃ r ∈ rs, r.matches req = .partial) ∧
         allow = allowOf rs req
 
@@ -34,23 +34,25 @@ def AllowUnion : Prop :=
 
 /-- 404 exactly when nothing matches and the slash redirect does not apply. -/
 def NoMatch404 : Prop :=
-  ∀ (rs : List BaseRoute) (b : Bool) (req : Request),
-    Router.resolve rs b req = .notFound ↔
+  ∀ (rs : List BaseRoute) (b : Bool) (req : Request) (p : AllowPolicy),
+    Router.resolve rs b req p = .notFound ↔
       (∀ r ∈ rs, r.matches req = .none) ∧
         ¬ (b = true ∧ req.routePath ≠ "/" ∧ ∃ r ∈ rs, (r.matches (toggleSlash req)).isNone = false)
 
 /-- `redirect_slashes` redirects exactly when the toggled path would match. -/
 def RedirectSlashes : Prop :=
-  ∀ (rs : List BaseRoute) (b : Bool) (req : Request) (url : String),
-    Router.resolve rs b req = .redirect url ↔
+  ∀ (rs : List BaseRoute) (b : Bool) (req : Request) (p : AllowPolicy) (url : String),
+    Router.resolve rs b req p = .redirect url ↔
       (∀ r ∈ rs, r.matches req = .none) ∧ b = true ∧ req.routePath ≠ "/" ∧
         (∃ r ∈ rs, (r.matches (toggleSlash req)).isNone = false) ∧
         url = toString (toggleSlash req).url
 
 /-- A route that allows `GET` treats `HEAD` as `GET`. -/
 def HeadImpliesGet : Prop :=
-  ∀ (r : BaseRoute) (req : Request), r.allows "GET" = true →
-    r.matches { req with method := "HEAD" } = r.matches { req with method := "GET" }
+  ∀ {α : Type} [ToApp α] (p : String) (e : α) (ms : List String) (n : String) (req : Request),
+    (Route p e ms n).allows "GET" = true →
+    (Route p e ms n).matches { req with method := "HEAD" } =
+      (Route p e ms n).matches { req with method := "GET" }
 
 /-- Header lookup ignores ASCII case. -/
 def HeadersGetCI : Prop :=

@@ -37,7 +37,7 @@ theorem theVerifiedRouting : VerifiedRouting where
   allowUnion := mem_allowOf
   noMatch404 := no_match_404
   redirectSlashes := redirect_slashes_307
-  headImpliesGet := head_implies_get
+  headImpliesGet := route_head_implies_get
   compileMatchUrlPathFor := fun p e ms n _ hc hs ha v hv req hr hm hp =>
     compile_match_url_path_for p e ms n hc hs ha v hv req hr hm hp
   urlPathForMatch := fun t _ _ h hc => urlPathFor_match t h hc

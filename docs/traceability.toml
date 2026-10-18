@@ -92,8 +92,17 @@ upstream = "tests/test_applications.py::test_func_route"
 title = "GET routes accept HEAD; a route allowing GET matches HEAD as GET"
 status = "implemented"
 realises = ["LeanStarlette.normaliseMethods", "LeanStarlette.BaseRoute.allows"]
-theorem = ["LeanStarlette.head_implies_get", "LeanStarlette.route_allows_head", "LeanStarlette.head_mem_normaliseMethods"]
+theorem = ["LeanStarlette.head_implies_get", "LeanStarlette.route_head_implies_get", "LeanStarlette.route_allows_head", "LeanStarlette.head_mem_normaliseMethods"]
 test = ["tests/Conformance.lean::applicationCases", "tests/Conformance.lean::transportCases"]
+
+[[requirement]]
+id = "routing.route-exact"
+upstream = "fastapi.routing.APIRoute (HEAD on a GET-only path operation: 405, allow: GET)"
+title = "RouteExact: a route whose method set is exactly the declared one (no HEAD for GET), for lean-fastapi; Route keeps upstream's HEAD rule"
+status = "implemented"
+realises = ["LeanStarlette.Routing.RouteExact", "LeanStarlette.BaseRoute.autoHead"]
+theorem = ["LeanStarlette.routeExact_methods", "LeanStarlette.route_autoHead", "LeanStarlette.route_head_implies_get"]
+test = ["tests/Conformance.lean::routingCases"]
 
 [[requirement]]
 id = "routing.mount"
@@ -233,6 +242,47 @@ title = "Serving over Std.Http (trusted, not re-verified): request/response conv
 status = "tested"
 realises = ["LeanStarlette.Application.run", "LeanStarlette.Application.toHandler", "LeanStarlette.Application.exchange", "LeanStarlette.requestOfHead", "LeanStarlette.toHttpResponse"]
 test = ["tests/Conformance.lean::transportCases"]
+
+[[requirement]]
+id = "transport.uvicorn-defaults"
+upstream = "uvicorn 0.54 (httptools) + Starlette 1.8.0, measured on the same raw requests"
+title = "Server defaults match uvicorn's effective limits: any number of query parameters, invalid escapes reach QueryParams raw, any number of headers, targets up to 65535 bytes; the router's Allow policy is selected explicitly (.unionOfPartials)"
+status = "tested"
+realises = ["LeanStarlette.transportConfig", "LeanStarlette.rewriteHead", "LeanStarlette.readHead", "LeanStarlette.serveOne", "LeanStarlette.requestOfHead", "LeanStarlette.Router.resolve"]
+test = ["tests/Conformance.lean::socketCases"]
+
+[[requirement]]
+id = "transport.limits"
+upstream = "uvicorn 0.54: h11/httptools limits"
+title = "Remaining limits, each answered with a status and a body: target over 65535 bytes is 414 (uvicorn: 400), head over 1 MiB is 431 (uvicorn: unlimited), body over the config maxBodySize (64 MiB default) or the app's max_body_size is 413 (uvicorn: unlimited), no Host is 400 (RFC 9112 3.2; uvicorn: 200), one request per connection (keep-alive off: the transport rewrites only the first request line), head timeout 408"
+status = "deviation"
+realises = ["LeanStarlette.maxTargetLength", "LeanStarlette.maxHeadBytes", "LeanStarlette.rawResponse", "LeanStarlette.Application.bodyLimit", "LeanStarlette.transportConfig"]
+test = ["tests/Conformance.lean::socketCases", "tests/Conformance.lean::applicationCases"]
+
+[[requirement]]
+id = "conformance.golden"
+upstream = "Starlette 1.8.0 TestClient, recorded by tests/golden/record.py"
+title = "Golden status, headers and body for 20 requests, replayed against the same app in Lean; one recorded deviation (invalid JSON body: 400, upstream 500)"
+status = "tested"
+realises = ["LeanStarlette.Application.call"]
+test = ["tests/Conformance.lean::goldenCases", "tests/golden/starlette-1.8.0.jsonl"]
+
+[[requirement]]
+id = "datastructures.multi-items"
+upstream = "tests/test_datastructures.py::test_queryparams"
+title = "multi_items() on QueryParams and Headers, snake_case alias of multiItems as in Starlette"
+status = "tested"
+realises = ["LeanStarlette.QueryParams.multi_items", "LeanStarlette.Headers.multi_items"]
+test = ["tests/Conformance.lean::datastructureCases"]
+
+[[requirement]]
+id = "input.numbers"
+upstream = "CPython int() (sys.int_max_str_digits = 4300) in FileResponse._parse_range_header and email.utils.parsedate"
+title = "Numbers in request input: CPython's 4300-digit limit checked in linear time before conversion; chunked conversion equal to digitsValue"
+status = "implemented"
+realises = ["LeanStarlette.boundedDigits?", "LeanStarlette.pyInt?", "LeanStarlette.natOf?", "LeanStarlette.maxIntDigits"]
+theorem = ["LeanStarlette.digitsValueChunked_eq"]
+test = ["tests/Conformance.lean::numericCases", "tests/Bench.lean"]
 
 [[requirement]]
 id = "excluded.host-websocket-lifespan"

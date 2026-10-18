@@ -1,5 +1,6 @@
 import Keel.Route
 import LeanJson
+import Std.Async
 import LeanStarlette.DataTypes.Chars
 
 /-!
@@ -16,7 +17,8 @@ fields:
 * `Response.h_body`: a response whose status forbids content (1xx, 204, 304)
   has an empty body (RFC 9110 section 6.4.1; upstream does not enforce it,
   UP-028).
-* `BaseRoute.route`'s `h_head`: a route that allows `GET` allows `HEAD`.
+* `BaseRoute.route`'s `h_head`: a route with `auto_head` that allows `GET`
+  allows `HEAD` (`Route` sets it, as upstream; `RouteExact` does not).
 -/
 
 namespace LeanStarlette
@@ -84,13 +86,38 @@ structure Request where
 
 /-! ## Responses -/
 
-/-- An HTTP response: status, headers in order, and body. -/
+/-- A streamed body (`StreamingResponse(content)`): a producer that hands
+each chunk to `send`, in order. `send` returns when the transport has taken
+the chunk, so a producer holds one chunk at a time: constant memory, however
+long (or endless) the stream. -/
+abbrev ContentStream := (ByteArray → Std.Async.Async Unit) → Std.Async.Async Unit
+
+/-- `BackgroundTasks`: actions run in order after the response is sent. A
+task that throws stops the ones after it, as upstream. -/
+structure BackgroundTasks where
+  tasks : List (IO Unit) := []
+
+/-- A file to send (`FileResponse(path)`): read when the response is sent,
+in chunks, honouring `Range` and `If-Range`. -/
+structure FileSource where
+  path : System.FilePath
+  /-- `stat_result`, if the caller already has it: size and mtime in ns. -/
+  stat : Option (Nat × Int) := none
+
+/-- An HTTP response: status, headers in order, and a body that is bytes in
+memory, a stream, or a file. -/
 structure Response where
   status_code : Nat
   headers : Headers
   body : ByteArray
   h_status : StatusCode.Valid status_code
   h_body : bodyAllowed status_code = true ∨ body.size = 0
+  /-- A streamed body; `body` is then empty. -/
+  stream : Option ContentStream := none
+  /-- A file body, resolved when the response is sent; `body` is then empty. -/
+  file : Option FileSource := none
+  /-- Run after the response is sent. -/
+  background : BackgroundTasks := {}
 
 /-! ## Exceptions and the handler monad -/
 
@@ -119,7 +146,8 @@ inductive BaseRoute where
   /-- `Route(path, endpoint, methods=..., name=...)`. `error` is the
   `compile_path` error, if the path did not compile. -/
   | route (path : String) (r : Keel.Route App) (name : String) (error : Option String)
-      (h_head : ∀ ms, r.methods = some ms → "GET" ∈ ms → "HEAD" ∈ ms)
+      (auto_head : Bool)
+      (h_head : auto_head = true → ∀ ms, r.methods = some ms → "GET" ∈ ms → "HEAD" ∈ ms)
   /-- `Mount(path, routes=... | app=..., name=...)`: `template` is
   `path + "/{path:path}"`; `handler` runs the mounted routes or app. -/
   | mount (path : String) (template : Keel.PathTemplate) (routes : List BaseRoute)

@@ -74,9 +74,9 @@ instantiated for Starlette's `Route`, `Mount` and `Router`:
 | Property | Lean statement |
 |---|---|
 | The first fully matching route handles the request | `route_first_match : Router.resolve rs b req = .found c ↔ ∃ pre r post, rs = pre ++ r :: post ∧ r.matches req = .full c ∧ ∀ r' ∈ pre, ¬ (r'.matches req).IsFull` |
-| 405 exactly when nothing matches fully and something matches the path; `Allow` is the union of those routes' methods | `partial_iff_405 : Router.resolve rs b req = .methodNotAllowed allow ↔ (∀ r ∈ rs, ¬ full) ∧ (∃ r ∈ rs, partial) ∧ allow = allowOf rs req`, `mem_allowOf` |
+| 405 exactly when nothing matches fully and something matches the path; `Allow` is the union of those routes' methods | `partial_iff_405 : Router.resolve rs b req .unionOfPartials = .methodNotAllowed allow ↔ (∀ r ∈ rs, ¬ full) ∧ (∃ r ∈ rs, partial) ∧ allow = allowOf rs req`, `mem_allowOf` |
 | 404 exactly when nothing matches and `redirect_slashes` does not apply; the redirect is a 307 to the toggled path | `no_match_404`, `redirect_slashes_307`, `redirect_307` |
-| A route that allows `GET` treats `HEAD` as `GET` | `head_implies_get : r.allows "GET" → r.matches {req with method := "HEAD"} = r.matches {req with method := "GET"}` |
+| A `Route` that allows `GET` treats `HEAD` as `GET` (`RouteExact`, for FastAPI's `APIRoute`, does not add `HEAD`) | `route_head_implies_get : (Route p e ms n).allows "GET" → (Route p e ms n).matches {req with method := "HEAD"} = (Route p e ms n).matches {req with method := "GET"}`, `routeExact_methods` |
 | `url_path_for` and routing are inverse | `compile_match_url_path_for` (the URL of valid captures routes back to them), `urlPathFor_match` (a canonical path is the URL of its match) |
 | Header lookup is case-insensitive | `headers_get_ci : (Headers.ofList l).get? k = (l.find? (lowerAscii ·.1 == lowerAscii k)).map (·.2)` |
 | `content-length` is the size of the body sent | `content_length_eq_body` |

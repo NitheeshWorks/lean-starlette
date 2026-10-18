@@ -84,26 +84,32 @@ namespace BaseRoute
 
 /-- The methods a route allows (empty for a mount, which allows all). -/
 def methodsOf : BaseRoute → List String
-  | .route _ r _ _ _ => r.methods.getD []
+  | .route _ r _ _ _ _ => r.methods.getD []
   | .mount .. => []
 
 /-- Whether a route accepts a method (a mount, or a route without methods,
 accepts all). -/
 def allows (r : BaseRoute) (m : String) : Bool :=
   match r with
-  | .route _ rt _ _ _ => rt.allows m
+  | .route _ rt _ _ _ _ => rt.allows m
+  | .mount .. => true
+
+/-- Whether the route adds `HEAD` to `GET`: `Route` does, `RouteExact` does
+not; a mount has no method set of its own. -/
+def autoHead : BaseRoute → Bool
+  | .route _ _ _ _ ah _ => ah
   | .mount .. => true
 
 /-- `name` of a route (a mount's may be absent). -/
 def nameOf : BaseRoute → Option String
-  | .route _ _ n _ _ => some n
+  | .route _ _ n _ _ _ => some n
   | .mount _ _ _ _ n _ => n
 
 /-- `route.matches(scope)`. A `Route` checks the template and then the
 method; a `Mount` checks `path + "/{path:path}"` and passes the rest of the
 path down, moving the matched prefix into `root_path`. -/
 def «matches» (req : Request) : BaseRoute → Keel.Match Child
-  | .route _ r _ err _ =>
+  | .route _ r _ err _ _ =>
     if err.isSome then .none else
     match r.matches req.method req.routePath with
     | .full v => .full ⟨⟨req.path_params.items ++ namedParams r.path.pieces v⟩, req.root_path, r.endpoint⟩
@@ -135,11 +141,6 @@ inductive Resolution where
   /-- `404 Not Found`. -/
   | notFound
 
-/-- Whether a match is partial. -/
-def _root_.Keel.Match.isPartial {β : Type} : Keel.Match β → Bool
-  | .partial => true
-  | _ => false
-
 /-- Whether a match is none. -/
 def _root_.Keel.Match.isNone {β : Type} : Keel.Match β → Bool
   | .none => true
@@ -157,11 +158,18 @@ def toggleSlash (req : Request) : Request :=
     { req with path := String.ofList (req.path.toList.reverse.dropWhile (· = '/')).reverse }
   else { req with path := req.path ++ "/" }
 
-/-- **`Router.app`'s decision**, for a request against a list of routes. -/
-def Router.resolve (routes : List BaseRoute) (redirect_slashes : Bool) (req : Request) : Resolution :=
+/-- **`Router.app`'s decision**, for a request against a list of routes. The
+`Allow` list of a `405` follows `policy` (Keel's `AllowPolicy`): upstream
+lists the first partial route's methods (`.firstPartial`); lean-starlette
+selects `.unionOfPartials` (see `routerApp` and UP-027). -/
+def Router.resolve (routes : List BaseRoute) (redirect_slashes : Bool) (req : Request)
+    (policy : Keel.AllowPolicy) : Resolution :=
   match dispatch (β := fun _ => Child) (BaseRoute.matches req) routes with
   | .found _ c => .found c
-  | .partial _ => .methodNotAllowed (allowOf routes req)
+  | .partial r => .methodNotAllowed
+      (match policy with
+       | .firstPartial => r.methodsOf
+       | .unionOfPartials => allowOf routes req)
   | .none =>
     if redirect_slashes && req.routePath != "/" &&
         routes.any (fun r => !((r.matches (toggleSlash req)).isNone)) then
@@ -173,9 +181,15 @@ def methodNotAllowed (allow : List String) : Exception :=
   HTTPException 405 (headers := [("Allow", ", ".intercalate allow)])
 
 /-- **`Router.app`**: run the decision. Inside an application a 404 or 405
-is raised as an `HTTPException` for the exception middleware to render. -/
+is raised as an `HTTPException` for the exception middleware to render.
+
+The `Allow` policy is selected here, explicitly: `.unionOfPartials`, every
+method of every route that matches the path, once each, in declaration order.
+Upstream (Starlette 1.8.0) lists only the first partial route's methods, which
+leaves out methods other routes on the same path accept, contrary to RFC 9110
+15.5.6 (UP-027). -/
 def routerApp (routes : List BaseRoute) (redirect_slashes : Bool := true) : App := fun req =>
-  match Router.resolve routes redirect_slashes req with
+  match Router.resolve routes redirect_slashes req (policy := .unionOfPartials) with
   | .found c => c.handler { req with path_params := c.params, root_path := c.root_path }
   | .methodNotAllowed allow => throw (methodNotAllowed allow)
   | .redirect url => pure (RedirectResponse url)
@@ -215,7 +229,7 @@ def stripMountName (mname : Option String) (name : String) : Option String :=
 mutual
 /-- `route.url_path_for(name, **path_params)`. -/
 def BaseRoute.urlPathFor : BaseRoute → String → List (String × String) → Option URLPath
-  | .route _ r rname err _, name, kw =>
+  | .route _ r rname err _ _, name, kw =>
     if err.isSome || name != rname then none
     else (renderTemplate r.path kw).map (URLPath.ofPath · "http")
   | .mount _ t routes _ mname err, name, kw =>

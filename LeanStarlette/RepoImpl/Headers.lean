@@ -1,5 +1,6 @@
 import LeanStarlette.DataTypes.Http
 import LeanStarlette.RepoImpl.Text
+import Std.Data.HashMap
 
 /-!
 # RepoImpl: headers
@@ -49,7 +50,12 @@ def items (h : Headers) : List (String × String) := h.raw
 
 /-- `dict(headers)`: each name once, with its first value. -/
 def dict (h : Headers) : List (String × String) :=
-  (dedup h.keys).map fun k => (k, (h.get? k).getD "")
+  let first : Std.HashMap String String := h.raw.foldl (fun m p => if m.contains p.1 then m else m.insert p.1 p.2) {}
+  (dedupStrings h.keys).map fun k => (k, first.getD k "")
+
+/-- `headers.multi_items()`: every field, in order (`items()` upstream). -/
+def multiItems (h : Headers) : List (String × String) := h.raw
+abbrev multi_items := @multiItems
 
 /-- `MutableHeaders.append(key, value)`: add a field, keeping duplicates. -/
 def append (h : Headers) (key value : String) : Headers :=
