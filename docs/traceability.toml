@@ -436,6 +436,54 @@ realises = ["LeanStarlette.parseRawForm"]
 test = ["tests/Conformance.lean::formSlowCases", "tests/Conformance.lean::formTightCases"]
 
 [[requirement]]
+id = "testclient.client"
+upstream = "tests/test_testclient.py::test_client"
+title = "TestClient(app, base_url, raise_server_exceptions, root_path, cookies, headers, follow_redirects, client) is lean-httpx's Client over the in-process transport: default headers with user-agent testclient, base_url merging, cookies, redirects"
+status = "tested"
+realises = ["LeanStarlette.TestClient", "LeanStarlette.testClientTransport"]
+test = ["tests/Conformance.lean::tcGoldenCases", "tests/golden/testclient-starlette-1.8.0.jsonl"]
+
+[[requirement]]
+id = "testclient.scope"
+upstream = "starlette/testclient.py:_TestClientTransport.handle_request"
+title = "The scope of a test request: every header (name lower-cased), host from the URL when absent, server port defaulted by scheme, method/query/body unchanged, path unquote(url.path) as upstream (UP-058: decoded twice)"
+status = "implemented"
+realises = ["LeanStarlette.scopeRequest", "LeanStarlette.scopeHeaders", "LeanStarlette.schemeDefaultPort", "LeanStarlette.testScope"]
+theorem = ["LeanStarlette.scope_headers_complete", "LeanStarlette.scope_has_host", "LeanStarlette.scope_passthrough"]
+test = ["tests/Conformance.lean::tcGoldenCases", "tests/Props.lean::properties"]
+
+[[requirement]]
+id = "testclient.response"
+upstream = "starlette/testclient.py:_TestClientTransport.handle_request (send)"
+title = "The client gets the application's status, headers and body; HEAD has no body; background tasks run before the response returns"
+status = "implemented"
+realises = ["LeanStarlette.testResponse"]
+theorem = ["LeanStarlette.test_response_body"]
+test = ["tests/Conformance.lean::tcGoldenCases"]
+
+[[requirement]]
+id = "testclient.raise-server-exceptions"
+upstream = "starlette/testclient.py:TestClient (raise_server_exceptions)"
+title = "An exception that reaches ServerErrorMiddleware is re-raised by the client after the 500 is sent (raise_server_exceptions=True), or the 500 is returned"
+status = "tested"
+realises = ["LeanStarlette.serverErrorMiddleware", "LeanStarlette.Application.call"]
+test = ["tests/Conformance.lean::tcGoldenCases"]
+
+[[requirement]]
+id = "testclient.accept-encoding"
+upstream = "tests/test_requests.py::test_request_headers"
+title = "accept-encoding is 'gzip, deflate' (lean-httpx decodes gzip and deflate); upstream's test expects zstd, which httpx adds only with a zstd decoder installed (httpx 0.28.1 in the venv sends 'gzip, deflate')"
+status = "deviation"
+realises = ["LeanStarlette.TestClient"]
+test = ["tests/Conformance.lean::requestCases"]
+
+[[requirement]]
+id = "excluded.testclient-asgi"
+upstream = "tests/test_testclient.py::test_testclient_asgi3"
+title = "Raw ASGI callables (asgi2/asgi3 apps, http.response.debug and trailers extensions, invalid message sequences), the timeout deprecation warning, and the WebSocket session and lifespan context (the m7 WebSocket/lifespan card): applications here are Lean Apps, not ASGI message streams"
+status = "excluded"
+
+[[requirement]]
 id = "excluded.host-websocket-lifespan"
 upstream = "tests/test_routing.py::test_host_routing"
 title = "Host routes, WebSocketRoute, lifespan, class endpoints: later cards (m7)"

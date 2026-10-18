@@ -5,6 +5,7 @@ import LeanStarlette.Proofs.Background
 import LeanStarlette.Proofs.Range
 import LeanStarlette.Proofs.Files
 import LeanStarlette.Proofs.Forms
+import LeanStarlette.Proofs.TestClient
 
 /-!
 # The harness: one `Verified<Layer>` structure per layer
@@ -88,5 +89,16 @@ theorem theVerifiedForms : VerifiedForms where
   formParseAgrees := fun _ _ _ _ h => form_parse_agrees h
   formLimitsEnforced := fun _ _ _ _ h => form_limits_enforced h
   formError400 := form_error_400
+
+/-- The test client (m8): the transport's scope and response. -/
+structure VerifiedTestClient where
+  headersComplete : Spec.TestClientHeadersComplete
+  hasHost : Spec.TestClientHasHost
+  response : Spec.TestClientResponse
+
+theorem theVerifiedTestClient : VerifiedTestClient where
+  headersComplete := fun rp c r _ _ h => scope_headers_complete rp c r h
+  hasHost := scope_has_host
+  response := test_response_body
 
 end LeanStarlette

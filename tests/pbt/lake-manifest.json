@@ -43,7 +43,7 @@
    "type": "git",
    "subDir": null,
    "scope": "",
-   "rev": "7fa4926478915340ef66a34bc4af62220e0380d7",
+   "rev": "7a7919edbe0350c492faa203b3108abd81038c25",
    "name": "LeanHttpx",
    "manifestFile": "lake-manifest.json",
    "inputRev": "main",

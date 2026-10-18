@@ -1,5 +1,6 @@
 import LeanStarlette.APIs.Starlette
 import LeanStarlette.APIs.Forms
+import LeanStarlette.APIs.TestClient
 
 /-!
 # Specifications: what the router and the responses promise
@@ -155,5 +156,24 @@ def FormError400 : Prop :=
     formItems { maxFiles := max_files, maxFields := max_fields, maxPartSize := max_part_size }
       (r.headers.get? "content-type") r.bodyBytes = .error e →
     r.form max_files max_fields max_part_size = throw (HTTPException 400 (detail := some (formErrorMessage e)))
+
+/-- The test client's transport hands the application every request
+header, name lower-cased. -/
+def TestClientHeadersComplete : Prop :=
+  ∀ (rootPath : String) (client : String × Nat) (r : LeanHttpx.Request) (k v : String),
+    (k, v) ∈ r.headers.raw → (lowerAscii k, v) ∈ (scopeRequest rootPath client r).headers.raw
+
+/-- The application always sees a `host` header. -/
+def TestClientHasHost : Prop :=
+  ∀ (rootPath : String) (client : String × Nat) (r : LeanHttpx.Request),
+    ∃ v, ("host", v) ∈ (scopeRequest rootPath client r).headers.raw
+
+/-- A `HEAD` response reaches the client with no body; any other with the
+application's status, headers and body. -/
+def TestClientResponse : Prop :=
+  ∀ (method : String) (status : Nat) (headers : Headers) (body : ByteArray),
+    let r := testResponse method status headers body
+    r.statusCode = status ∧ r.headers.raw = headers.raw ∧
+      r.stream = some (if method == "HEAD" then .empty else body)
 
 end LeanStarlette.Spec

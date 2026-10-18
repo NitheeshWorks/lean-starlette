@@ -8,10 +8,9 @@ Each case re-expresses one upstream test (https://github.com/Kludex/starlette,
 both. The upstream suite is the behavioural specification; no upstream code
 is copied. Expected values were confirmed against Starlette 1.8.0.
 
-`TestClient` below is a small in-process client with the conventions of
-`starlette.testclient.TestClient` (base URL `http://testserver`, httpx's
-default headers, redirects followed); the full client over lean-httpx is a
-later card. Cases tagged `[std.http]` go through the real transport,
+`TestClient.request` below sends one request through `LeanStarlette.TestClient`
+(lean-httpx's `Client` over the in-process transport, as
+`starlette.testclient.TestClient` is an `httpx.Client`). Cases tagged `[std.http]` go through the real transport,
 `Std.Http`'s parser and writer over its in-memory connection.
 
 Run with `lake exe conformance`.
@@ -39,51 +38,18 @@ def TestResponse.json (r : TestResponse) : Option Json :=
   | .ok v => some v.val
   | .error _ => none
 
-/-- Split `http://host:port/path?query` (or a bare path) against a base. -/
-def resolveURL (base : URL) (url : String) : URL :=
-  let u := URL.parse url
-  if u.scheme.isEmpty then { u with scheme := base.scheme, netloc := base.netloc } else u
-
-def defaultHeaders (netloc : String) : List (String × String) :=
-  [("host", netloc), ("accept", "*/*"), ("accept-encoding", "gzip, deflate, zstd"),
-   ("connection", "keep-alive"), ("user-agent", "testclient")]
-
-/-- Build the request Starlette's test client would send. -/
-def mkRequest (method : String) (u : URL) (headers : List (String × String)) (content : ByteArray) : Request :=
-  let port := match splitFirst ':' u.netloc.toList with
-    | (_, some p) => ofDigits p
-    | _ => if u.scheme == "https" then 443 else 80
-  let host := String.ofList (splitFirst ':' u.netloc.toList).1
-  let given := Headers.ofList headers
-  let hs := (defaultHeaders u.netloc).filter (fun p => !given.contains p.1) ++ headers
-  let hs := if content.size > 0 then hs ++ [("content-length", toString content.size)] else hs
-  { method, scheme := u.scheme, server := some (host, port), client := some ("testclient", 50000),
-    path := unquote u.path, query_string := u.query, headers := Headers.ofList hs, bodyBytes := content }
-
-/-- Send, then follow up to `fuel` redirects. -/
-def sendFollow (app : Application) (headers : List (String × String)) (follow : Bool) :
-    Nat → String → URL → ByteArray → IO TestResponse
-  | fuel, method, u, content => do
-    let r ← app.call (mkRequest method u headers content)
-    let full ← r.readBody
-    r.background.run
-    let body := if method == "HEAD" then ByteArray.empty else full
-    let resp : TestResponse := ⟨r.status_code, r.headers, body, toString u⟩
-    match fuel with
-    | 0 => pure resp
-    | n + 1 =>
-      match r.headers.get? "location" with
-      | some loc =>
-        if follow && [301, 302, 303, 307, 308].contains r.status_code then
-          let (m, c) := if r.status_code == 303 then ("GET", ByteArray.empty) else (method, content)
-          sendFollow app headers follow n m (resolveURL u loc) c
-        else pure resp
-      | none => pure resp
-
+/-- One request through `LeanStarlette.TestClient` (lean-httpx's client
+over the in-process transport), with exceptions turned into the 500 the
+application sent (`raise_server_exceptions=False`), as most cases expect. -/
 def TestClient.request (app : Application) (method url : String)
     (headers : List (String × String) := []) (content : ByteArray := .empty)
-    (follow : Bool := true) (base : String := "http://testserver") : IO TestResponse :=
-  sendFollow app headers follow 20 method (resolveURL (URL.parse base) url) content
+    (follow : Bool := true) (base : String := "http://testserver") : IO TestResponse := do
+  let c ← LeanStarlette.TestClient app (base_url := base) (follow_redirects := follow)
+    (raise_server_exceptions := false)
+  let r ← c.request method url (content := if content.isEmpty then none else some (.bytes content))
+    (headers := headers)
+  let u := match r.request? with | some q => toString q.url | none => url
+  return ⟨r.statusCode, Headers.ofList r.headers.raw, r.content, u⟩
 
 def TestClient.get (app : Application) (url : String) (headers : List (String × String) := [])
     (follow := true) (base := "http://testserver") : IO TestResponse :=
@@ -364,7 +330,11 @@ def requestCases : List Case := [
   ⟨"tests/test_requests.py::test_request_headers", "request.headers", do
     let a := echoApp fun r => pure (Json.obj #[("headers", Json.obj (r.headers.dict.map fun (k, v) => (k, Json.str v)).toArray)])
     let r ← TestClient.get a "/" (headers := [("host", "example.org")])
-    ok (jsonEq r.json (json% {"headers": {"accept": "*/*", "accept-encoding": "gzip, deflate, zstd",
+    -- Upstream expects `gzip, deflate, zstd`: httpx adds zstd only with a zstd
+    -- decoder installed. lean-httpx decodes gzip and deflate, and sends what
+    -- httpx 0.28.1 without one sends (tests/golden/testclient-starlette-1.8.0.jsonl).
+    -- In the order httpx 0.28.1 sends them (a given Host goes last).
+    ok (jsonEq r.json (json% {"headers": {"accept": "*/*", "accept-encoding": "gzip, deflate",
       "connection": "keep-alive", "user-agent": "testclient", "host": "example.org"}}))⟩,
   ⟨"tests/test_requests.py::test_request_client", "request.client", do
     ok ((({ client := some ("client", 42) } : Request).clientOf == some ("client", 42)) &&
@@ -947,6 +917,126 @@ def formGoldenCases : IO (List Case) := do
   let lines ← IO.FS.lines "tests/golden/forms-starlette-1.8.0.jsonl"
   return lines.toList.filterMap fun l => (from_json l).toOption.bind fun j => formGoldenCase j.val
 
+/-! ## TestClient (tests/test_testclient.py), golden replay
+
+`tests/golden/testclient-starlette-1.8.0.jsonl` holds what Starlette 1.8.0's
+`TestClient` (httpx 0.28.1) returned for each call on the apps of
+`tests/golden/record_testclient.py`; `tcApp` is the same application in
+Lean, and each case drives `LeanStarlette.TestClient` the same way. -/
+
+/-- `echo`: what the application saw of the request. -/
+def tcEcho (r : Request) : AppM Response := do
+  let body ← r.body
+  let pair (p : String × Nat) : Json := .arr #[.str p.1, .num (.int p.2)]
+  return JSONResponse (Json.obj #[
+    ("method", .str r.method), ("url", .str (toString r.url)), ("path", .str r.path),
+    ("root_path", .str r.root_path), ("query_string", .str r.query_string),
+    ("headers", .arr (r.headers.raw.map fun (k, v) => Json.arr #[.str k, .str v]).toArray),
+    ("client", (r.client.map pair).getD .null), ("server", (r.server.map pair).getD .null),
+    ("body", .str (latin1Decode body))])
+
+def tcRedirect (r : Request) : Response :=
+  let to := (r.queryParams.get? "to").getD "/echo"
+  match r.queryParams.get? "code" with
+  | some "301" => RedirectResponse to (status_code := 301)
+  | some "302" => RedirectResponse to (status_code := 302)
+  | some "303" => RedirectResponse to (status_code := 303)
+  | some "308" => RedirectResponse to (status_code := 308)
+  | _ => RedirectResponse to
+
+/-- `response.set_cookie(name, value, path="/", domain=domain)` (written out:
+`set_cookie` is the cookies card's). -/
+def tcCookie (r : Request) : Response :=
+  let q := r.queryParams
+  let dom := match q.get? "domain" with | some d => s!"; Domain={d}" | none => ""
+  let r := PlainTextResponse "Hello, world!"
+  let v := s!"{(q.get? "name").getD "mycookie"}={(q.get? "value").getD "myvalue"}{dom}; Path=/; SameSite=lax"
+  { r with headers := r.headers.append "set-cookie" v }
+
+def tcMockService : Application :=
+  Starlette (routes := [Route "/" (fun (_ : Request) => JSONResponse (json% {"mock": "example"}))])
+
+/-- `test_use_testclient_in_endpoint`: a TestClient inside an endpoint. -/
+def tcInEndpoint (_ : Request) : AppM Response := do
+  let client ← (LeanStarlette.TestClient tcMockService : IO LeanHttpx.Client)
+  let r ← (client.get "/" : IO LeanHttpx.Response)
+  let j ← (liftM (m := Except LeanHttpx.HTTPError) r.json : IO Json)
+  return JSONResponse j
+
+def tcMethods : List String := ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+
+def tcApp : Application := Starlette (routes := [
+  Route "/echo" tcEcho (methods := tcMethods),
+  Route "/echo/{rest:path}" tcEcho (methods := tcMethods),
+  Route "/api/v1/echo" tcEcho (methods := tcMethods),
+  Route "/redirect" tcRedirect (methods := tcMethods),
+  Route "/cookie" tcCookie,
+  Route "/boom" (fun (_ : Request) => (throw (IO.userError "boom") : IO Response)),
+  Route "/in-endpoint" tcInEndpoint,
+  Route "/query" (fun (r : Request) => Response ((r.queryParams.get? "param").getD "")),
+  Route "/api/v1/bar" (fun (r : Request) => Response r.url.path),
+  Route "/dup" (fun (r : Request) => JSONResponse (Json.obj #[("x-token",
+    .arr ((r.headers.getlist "x-token").map Json.str).toArray)]))])
+
+/-- String pairs from a JSON object or a list of pairs. -/
+def tcPairs (j : Option Json) : List (String × String) :=
+  match j with
+  | some (.obj kvs) => kvs.toList.filterMap fun (k, v) => v.getStr?.map (k, ·)
+  | some (.arr xs) => xs.toList.filterMap fun p => match p.getArr? with
+    | some #[a, b] => do pure ((← a.getStr?), (← b.getStr?))
+    | _ => none
+  | _ => []
+
+/-- What a call returned, as the recorder writes it. -/
+def tcResult (client : LeanHttpx.Client) (call : Json) : IO Json := do
+  let method := ((call.getObjVal? "method").bind Json.getStr?).getD "GET"
+  let url := ((call.getObjVal? "url").bind Json.getStr?).getD "/"
+  let content : Option LeanHttpx.Content := ((call.getObjVal? "content").bind Json.getStr?).map (.text ·)
+  try
+    let r ← client.request method url (content := content) (data := tcPairs (call.getObjVal? "data"))
+      (json := call.getObjVal? "json") (params := (tcPairs (call.getObjVal? "params") : LeanHttpx.QueryParams))
+      (headers := (tcPairs (call.getObjVal? "headers") : LeanHttpx.Headers))
+      (cookies := (tcPairs (call.getObjVal? "cookies") : LeanHttpx.Cookies))
+      (followRedirects := (call.getObjVal? "follow_redirects").bind Json.getBool?)
+    let jar := ((← client.cookies).jar.map fun c => (c.name, c.value.getD "", c.domain)).toArray.qsort
+      (fun a b => a.1 < b.1 || (a.1 == b.1 && a.2.1 < b.2.1))
+    return Json.obj #[("status", .num (.int r.statusCode)),
+      ("headers", .arr (r.headers.raw.map fun (k, v) => Json.arr #[.str k, .str v]).toArray),
+      ("body", .str (latin1Decode r.content)),
+      ("url", .str (match r.request? with | some q => toString q.url | none => "")),
+      ("history", .arr (r.history.map fun h => Json.num (.int h.statusCode)).toArray),
+      ("jar", .arr (jar.map fun (n, v, d) => Json.arr #[.str n, .str v, .str d]))]
+  catch e => return Json.obj #[("error", .str (toString e))]
+
+def tcGoldenCase (line : Json) : Option Case := do
+  let name ← (line.getObjVal? "name").bind Json.getStr?
+  let opts := (line.getObjVal? "client").getD (.obj #[])
+  let calls ← (line.getObjVal? "calls").bind Json.getArr?
+  let want ← (line.getObjVal? "results").bind Json.getArr?
+  let str (k : String) : Option String := (opts.getObjVal? k).bind Json.getStr?
+  let bool (k : String) : Option Bool := (opts.getObjVal? k).bind Json.getBool?
+  let peer : String × Nat := match (opts.getObjVal? "client").bind Json.getArr? with
+    | some #[h, p] => ((h.getStr?).getD "", ((p.getInt?).getD 0).toNat)
+    | _ => ("testclient", 50000)
+  pure ⟨s!"tests/test_testclient.py (golden, Starlette 1.8.0)", s!"testclient: {name}", do
+    let client ← LeanStarlette.TestClient tcApp (base_url := (str "base_url").getD "http://testserver")
+      (raise_server_exceptions := (bool "raise_server_exceptions").getD true)
+      (root_path := (str "root_path").getD "") (headers := tcPairs (opts.getObjVal? "headers"))
+      (cookies := (tcPairs (opts.getObjVal? "cookies") : LeanHttpx.Cookies))
+      (follow_redirects := (bool "follow_redirects").getD true) (client := peer)
+    let mut good := true
+    for (call, w) in calls.toList.zip want.toList do
+      let got ← tcResult client call
+      unless toString got == toString w do
+        good := false
+        IO.println s!"      got  {(String.ofList ((toString got).toList.take 700))}"
+        IO.println s!"      want {(String.ofList ((toString w).toList.take 700))}"
+    ok good⟩
+
+def tcGoldenCases : IO (List Case) := do
+  let lines ← IO.FS.lines "tests/golden/testclient-starlette-1.8.0.jsonl"
+  return lines.toList.filterMap fun l => (from_json l).toOption.bind fun j => tcGoldenCase j.val
+
 /-! ## Bench bounds (CI), at about twice upstream's time
 
 Upstream times measured on Starlette 1.8.0 / CPython 3.13 by the critic. -/
@@ -1151,11 +1241,12 @@ def main : IO UInt32 := do
   let filesGolden ← filesGoldenCases
   let filesBehaviour := filesBehaviourCases (← makeFixture)
   let formGolden ← formGoldenCases
+  let tcGolden ← tcGoldenCases
   let _ ← IO.asTask (socketApp.run (port := socketPort)) .dedicated
   let _ ← IO.asTask ((formApp "plain" {}).run (port := formPort)) .dedicated
   let _ ← IO.asTask ((formApp "plain" {}).run (port := stallPort) (config := { lingeringTimeout := 1000 })) .dedicated
   IO.sleep 1500
-  let cases := cases ++ golden ++ filesGolden ++ filesBehaviour ++ formGolden ++ formDataCases ++ socketCases ++ slowUploadCases
+  let cases := cases ++ golden ++ filesGolden ++ filesBehaviour ++ formGolden ++ tcGolden ++ formDataCases ++ socketCases ++ slowUploadCases
   for c in cases do
     let ok ← try c.run catch e => do IO.println s!"      {e}"; pure false
     IO.println s!"{if ok then "ok  " else "FAIL"}  {c.name}  [{c.upstream}]"

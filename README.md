@@ -87,6 +87,7 @@ instantiated for Starlette's `Route`, `Mount` and `Router`:
 | A static file is 304 exactly when `If-None-Match` lists its ETag (or `*`), else when `If-Modified-Since` is no earlier than `Last-Modified` | `etag_304_iff`, `date_304_iff`, `static_304_iff` |
 | A served static path is the directory followed by plain entry names (no `..`, `.`, `/`, NUL; on Windows no `\`) | `served_path_inside` |
 | `request.form()` is lean-multipart's Starlette parse, decoded; an accepted form meets `max_files`, `max_fields` and `max_part_size`; a rejected one is a 400 with Starlette's message | `form_parse_agrees`, `form_limits_enforced`, `form_error_400` |
+| The test client's transport hands the app every request header (lower-cased) and a `host`, and the client gets the app's status, headers and body (none for `HEAD`) | `scope_headers_complete`, `scope_has_host`, `test_response_body` |
 
 Every one has a slot in `LeanStarlette/Proofs/Verified.lean`. What is
 tested rather than proved, and every deviation from upstream, is listed in
@@ -124,8 +125,10 @@ Milestone 6: `StreamingResponse`, `BackgroundTasks`, `FileResponse` with
 sent in 64 KiB chunks: a 400 MB file peaks at 86 MB resident, as a 20 MB one
 does). Milestone 4: `request.form()` with `max_files`, `max_fields`,
 `max_part_size`, `FormData` and `UploadFile`, over lean-multipart.
-Middleware, cookies, WebSockets, `Host`, lifespan and the
-httpx-based `TestClient` follow in later milestones.
+Milestone 8: `TestClient` as lean-httpx's `Client` over the application
+(`let client ← TestClient app; let r ← client.get "/"`).
+Middleware, cookies, WebSockets (and the WebSocket test session), `Host`
+and lifespan follow in later milestones.
 
 ## License
 

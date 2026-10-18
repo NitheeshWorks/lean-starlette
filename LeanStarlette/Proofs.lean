@@ -4,4 +4,5 @@ import LeanStarlette.Proofs.Background
 import LeanStarlette.Proofs.Range
 import LeanStarlette.Proofs.Files
 import LeanStarlette.Proofs.Forms
+import LeanStarlette.Proofs.TestClient
 import LeanStarlette.Proofs.Verified

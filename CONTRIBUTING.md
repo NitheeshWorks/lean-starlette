@@ -18,6 +18,7 @@ to bytes:
 | `Proofs/` | theorems; `Proofs/Verified.lean` bundles one `Verified<Layer>` per layer | yes |
 | `APIs/` | the public surface, returning refinements | by construction |
 | `Transport.lean` | the only effectful module: `Std.Http` conversion and serving | no; tested |
+| `TestClient.lean` | `TestClient app`: lean-httpx's `Client` over an in-process transport | the transport's scope and response are (`RepoImpl/TestClient.lean`); the rest tested |
 
 Everything except the transport module is a pure function. This is
 load-bearing: a round-trip property of a function is an equation that
@@ -86,6 +87,22 @@ Listed here with the reason, and in `docs/traceability.toml` with
   reads and `stat` for `FileResponse` and `StaticFiles`. The decisions it
   acts on (ranges, ETags, 304, the path under the static root) are pure, in
   `Range.lean`, `Files.lean` and `HttpDate.lean`.
+
+* **`TestClient`** (`TestClient.lean`) is lean-httpx's `Client` over
+  `testClientTransport`, as Starlette's is an `httpx.Client`; the conformance
+  suite's `TestClient.request` goes through it. Proved: what the transport
+  computes (`scope_headers_complete`, `scope_has_host`, `scope_passthrough`,
+  `test_response_body`). Tested, not proved: the effectful transport
+  (re-raising a server error after the 500, background tasks) and the client
+  (lean-httpx's), by golden replay from Starlette 1.8.0's `TestClient`
+  (`tests/golden/testclient-starlette-1.8.0.jsonl`, 47 calls over
+  `tests/test_testclient.py`'s cases and the scope field by field) and a
+  property (query parameters lean-httpx encodes reach `query_params`). The
+  path is `unquote(url.path)` as upstream, which decodes twice (UP-058,
+  already reported upstream as Kludex/starlette#2587); matching it keeps the
+  golden tests honest. Raw ASGI apps, response trailers and debug extensions
+  are out of scope (applications here are Lean `App`s); the WebSocket test
+  session and lifespan context come with the m7 card.
 
 * **Forms.** The parse is proved (`Proofs/Forms.lean`): `request.form()`
   decodes the raw form lean-multipart's Starlette parser returns, refined by
@@ -165,6 +182,9 @@ Each has a `status = "deviation"` row in `docs/traceability.toml`.
     request line is rewritten;
   * a head not complete within `config.headerTimeout` is `408`.
   Pass a `Std.Http.Config` to tighten the rest.
+* **`TestClient` sends `accept-encoding: gzip, deflate`** (lean-httpx's
+  decoders); upstream's `test_request_headers` expects `zstd` too, which
+  httpx sends only with a zstd decoder installed.
 * **Uploads stay in memory**: lean-multipart parses a part into a
   `ByteArray`, so an `UploadFile` never spools to disk (upstream's
   `SpooledTemporaryFile` rolls over at 1 MiB). The body is bounded by

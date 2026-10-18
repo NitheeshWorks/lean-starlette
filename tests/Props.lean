@@ -168,7 +168,18 @@ def properties : List Property := [
     let ok := ((fd.get? k).bind (·.text?)) == all.getLast? &&
       fd.keys.eraseDups == fd.keys && fd.length == (fs.map (·.1)).eraseDups.length &&
       fd.contains k == !all.isEmpty
-    (check "formdata" ok (fun _ => toString fs), r)⟩
+    (check "formdata" ok (fun _ => toString fs), r)⟩,
+  ⟨"TestClient: params lean-httpx encodes reach the app as Starlette's query_params (grouped by key, as httpx)", fun r =>
+    let (fs, r) := randFields r 4
+    let got := match LeanHttpx.URL.parse "http://testserver/p" with
+      | .ok u => match LeanHttpx.Request.new "GET" u (params := some (LeanHttpx.QueryParams.ofList fs)) with
+        | .ok req => some (scopeRequest "" ("testclient", 50000) req).queryParams.multiItems
+        | .error _ => none
+      | .error _ => none
+    -- httpx's QueryParams groups a repeated key's values at its first position.
+    let keys := fs.foldl (fun ks (k, _) => if ks.contains k then ks else ks ++ [k]) []
+    let want := keys.flatMap fun k => fs.filter (·.1 == k)
+    (check "tc-params" (got == some want) (fun _ => s!"{fs} got {got}"), r)⟩
 ]
 
 

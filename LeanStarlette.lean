@@ -1,5 +1,6 @@
 import LeanStarlette.APIs
 import LeanStarlette.Transport
+import LeanStarlette.TestClient
 import LeanStarlette.Proofs
 
 /-!

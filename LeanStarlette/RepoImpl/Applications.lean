@@ -75,9 +75,12 @@ def debugResponse (req : Request) (e : Exception) : Response :=
 
 /-- `ServerErrorMiddleware(app, handler, debug)`. Upstream re-raises after
 responding so the server logs it; here the response is returned and the
-transport logs the error. -/
-def serverErrorMiddleware (handler : Option ExceptionHandler) (debug : Bool) (app : App) : App := fun req => do
-  let respond (e : Exception) : AppM Response :=
+exception handed to `report` (the transport logs it; `TestClient` re-raises
+it, as `raise_server_exceptions=True` does). -/
+def serverErrorMiddleware (handler : Option ExceptionHandler) (debug : Bool) (app : App)
+    (report : Exception → IO Unit := fun _ => pure ()) : App := fun req => do
+  let respond (e : Exception) : AppM Response := do
+    report e
     if debug then pure (debugResponse req e)
     else match handler with
       | some h => tryCatch (h req e) fun _ => pure internalServerError
@@ -112,8 +115,9 @@ def bodyLimit (limit : Option Nat) (app : App) : App := fun req =>
     else app req
   | none => app req
 
-/-- `build_middleware_stack()`, with `request.url_for` wired to the routes. -/
-def app (a : Application) : App := fun req =>
+/-- `build_middleware_stack()`, with `request.url_for` wired to the routes.
+An exception that reaches `ServerErrorMiddleware` is passed to `report`. -/
+def app (a : Application) (report : Exception → IO Unit := fun _ => pure ()) : App := fun req =>
   let isServer : ExceptionKey → Bool := fun k => k == .status 500 || k == .exception
   let errorHandler := (a.exception_handlers.find? (isServer ·.1)).map (·.2)
   let handlers := a.exception_handlers.filter (!isServer ·.1)
@@ -122,14 +126,15 @@ def app (a : Application) : App := fun req =>
     liftM (prepareFile req r)
   let inner := exceptionMiddleware handlers router
   let stack := a.middleware.foldr (fun m acc => m acc) inner
-  let stack := serverErrorMiddleware errorHandler a.debug (bodyLimit a.max_body_size stack)
+  let stack := serverErrorMiddleware errorHandler a.debug (bodyLimit a.max_body_size stack) report
   stack { req with urlPathFor := fun n ps => (urlPathForList a.routes n ps).map fun u => (u.path, u.protocol) }
 
 /-- Run the application on one request. Every exception has been turned
 into a response by `ServerErrorMiddleware`, so this cannot fail. -/
-def call (a : Application) (req : Request) : IO Response := do
+def call (a : Application) (req : Request) (report : Exception → IO Unit := fun _ => pure ()) :
+    IO Response := do
   try
-    match ← (a.app req).run with
+    match ← (a.app report req).run with
     | .ok r => pure r
     | .error _ => pure internalServerError
   catch _ => pure internalServerError
