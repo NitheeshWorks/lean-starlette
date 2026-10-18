@@ -898,14 +898,17 @@ def slowUploadCases : List Case := [
     ok (ms ≤ 4000 && !statusIs out "200")⟩
 ]
 
-/-- Cases whose time is lean-multipart's urlencoded machine stepping byte by
-byte through a field over 1 MiB (about 65 ms; Starlette 3 to 9 ms). Requested
-from lean-multipart (note on 2z9q5ypdqzv5); until it lands they are bounded at
-150 ms, and the 3x bound applies to every other case. -/
-def formSlowCases : List String := [
+/-- Urlencoded cases timed at about twice Starlette: lean-multipart 3263b06
+decodes and scans values at Python's speed. -/
+def formTightCases : List String := [
   "test_urlencoded_field_exceeds_max_part_size_raise",
-  "test_urlencoded_field_name_exceeds_max_part_size_raise",
   "hostile: a 20 MB urlencoded value"]
+
+/-- A long field name still costs lean-multipart's raw urlencoded parser
+about 70 ms per MiB (upstream 3 ms; REQUEST on its card hqhryygmautu):
+bounded at 150 ms until that is fixed. -/
+def formSlowCases : List String := [
+  "test_urlencoded_field_name_exceeds_max_part_size_raise"]
 
 def formGoldenCase (line : Json) : Option Case := do
   let name ← (line.getObjVal? "name").bind Json.getStr?
@@ -924,10 +927,11 @@ def formGoldenCase (line : Json) : Option Case := do
     | none => .empty
   let status ← (line.getObjVal? "status").bind Json.getInt?
   let content ← (line.getObjVal? "content").bind Json.getStr?
-  let bound := if formSlowCases.contains name then 150 else match line.getObjVal? "upstream_ms" with
-    | some j => match (LeanJson.to_json j).val.toList.takeWhile (· != 46) with
-      | ds => max 20 (3 * (String.fromUTF8! (ByteArray.mk ds.toArray)).toNat! + 3)
-    | none => 20
+  let upMs : Option Nat := (line.getObjVal? "upstream_ms").map fun j =>
+    (String.fromUTF8! (ByteArray.mk ((LeanJson.to_json j).val.toList.takeWhile (· != 46)).toArray)).toNat!
+  let bound := if formSlowCases.contains name then 150
+    else if formTightCases.contains name then 2 * (upMs.getD 0 + 1) + 4
+    else match upMs with | some u => max 20 (3 * u + 3) | none => 20
   pure ⟨s!"tests/test_formparsers.py (golden, Starlette 1.8.0)", s!"form: {name}", do
     let headers := match ct with | some c => [("content-type", c)] | none => []
     let t0 ← IO.monoMsNow

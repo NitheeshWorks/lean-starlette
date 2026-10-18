@@ -12,7 +12,8 @@ decodes their output as Starlette does and names each limit error with
 Starlette's message. `UploadFile` and `FormData`, which hold file state, are in
 `RepoImpl/Upload.lean`.
 
-* Urlencoded names and values: `unquote_plus(raw.decode("latin-1"))`.
+* Urlencoded names and values: `unquote_plus(raw.decode("latin-1"))`,
+  lean-multipart's `unquotePlusLatin1`.
 * Multipart names, filenames and text values: the request charset
   (`Content-Type; charset=…`, default UTF-8), falling back to latin-1 when the
   bytes do not decode or the charset is unknown (`_user_safe_decode`).
@@ -72,9 +73,13 @@ def FormItem.isFile : FormItem → Bool
   | .file _ => true
   | .text _ => false
 
-/-- One urlencoded field, decoded as Starlette's `FormParser` does. -/
+/-- One urlencoded field, decoded as Starlette's `FormParser` does:
+lean-multipart's `decodeField`, `unquote_plus(raw.decode("latin-1"))` on the
+name and the value (`unquotePlusLatin1`, proved equal to its byte-machine
+spec and compiled to it). -/
 def urlencodedItem (f : LeanMultipart.QsField) : String × FormItem :=
-  (unquotePlus (latin1Decode f.1), .text (unquotePlus (latin1Decode f.2)))
+  let (k, v) := LeanMultipart.API.Starlette.decodeField f
+  (k, .text v)
 
 /-- One multipart part, decoded as Starlette's `MultiPartParser` does. -/
 def multipartItem (cs : FormCharset) (p : LeanMultipart.StarlettePart) : String × FormItem :=

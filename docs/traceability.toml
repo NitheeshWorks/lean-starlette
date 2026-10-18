@@ -430,10 +430,10 @@ test = ["tests/Conformance.lean::slowUploadCases"]
 [[requirement]]
 id = "forms.urlencoded-speed"
 upstream = "tests/test_formparsers.py (multi-MiB urlencoded values)"
-title = "A multi-MiB urlencoded value takes about 65 ms per MiB in lean-multipart's parser (upstream 3 ms); three golden cases are bounded at 150 ms until lean-multipart's fix"
+title = "Urlencoded decoding is lean-multipart's unquotePlusLatin1 (3263b06): oversized values are timed at about 2x Starlette. A field name over 1 MiB still costs lean-multipart's raw parser about 70 ms per MiB (Starlette 3 ms); that one case is bounded at 150 ms until its fix"
 status = "partial"
 realises = ["LeanStarlette.parseRawForm"]
-test = ["tests/Conformance.lean::formSlowCases"]
+test = ["tests/Conformance.lean::formSlowCases", "tests/Conformance.lean::formTightCases"]
 
 [[requirement]]
 id = "excluded.host-websocket-lifespan"
