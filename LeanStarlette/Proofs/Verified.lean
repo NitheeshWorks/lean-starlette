@@ -7,6 +7,7 @@ import LeanStarlette.Proofs.Files
 import LeanStarlette.Proofs.Forms
 import LeanStarlette.Proofs.TestClient
 import LeanStarlette.Proofs.Chunked
+import LeanStarlette.Proofs.Middleware
 
 /-!
 # The harness: one `Verified<Layer>` structure per layer
@@ -103,5 +104,22 @@ theorem theVerifiedTestClient : VerifiedTestClient where
   headersComplete := fun rp c r _ _ h => scope_headers_complete rp c r h
   hasHost := scope_has_host
   response := test_response_body
+
+/-- Middleware (m5): the stack, trusted hosts, the HTTPS redirect, CORS. -/
+structure VerifiedMiddleware where
+  stackOrder : Spec.MiddlewareStackOrder
+  trustedHostReject : Spec.TrustedHostReject
+  trustedHostReject400 : Spec.TrustedHostReject400
+  httpsRedirect : Spec.HttpsRedirect
+  corsPreflight : Spec.CorsPreflight
+  corsAllowedOrigin : Spec.CorsAllowedOrigin
+
+theorem theVerifiedMiddleware : VerifiedMiddleware where
+  stackOrder := middleware_stack_order
+  trustedHostReject := trusted_host_reject
+  trustedHostReject400 := trusted_host_reject_400
+  httpsRedirect := https_redirect
+  corsPreflight := cors_preflight
+  corsAllowedOrigin := cors_allowed_origin
 
 end LeanStarlette

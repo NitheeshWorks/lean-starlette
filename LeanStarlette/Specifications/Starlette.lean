@@ -1,6 +1,7 @@
 import LeanStarlette.APIs.Starlette
 import LeanStarlette.APIs.Forms
 import LeanStarlette.APIs.TestClient
+import LeanStarlette.APIs.Middleware
 import LeanStarlette.Proofs.Chunked
 
 /-!
@@ -185,5 +186,62 @@ def ChunkedDecodeAgrees : Prop :=
   ∀ (cs : List ByteArray), (∀ c ∈ cs, 0 < c.size ∧ c.size < LeanHttpx.H1.maxChunkSize) → ∀ rest : ByteArray,
     decodeChunkedBody (LeanHttpx.H1.encodeChunked cs ++ rest) 0 =
       some (LeanHttpx.H1.concatChunks cs, (LeanHttpx.H1.encodeChunked cs).size)
+
+/-! ## Middleware (m5) -/
+
+/-- The first middleware in the list is the outermost: it is applied to the
+stack built from the rest. -/
+def MiddlewareStackOrder : Prop :=
+  ∀ (m : Middleware) (ms : List Middleware) (app : App),
+    middlewareStack [] app = app ∧ middlewareStack (m :: ms) app = m (middlewareStack ms app)
+
+/-- `TrustedHostMiddleware` rejects a request exactly when no pattern is `*`
+and either the `Host` header is missing or invalid, or the host matches no
+pattern and is not the `www.`-less form of one (under `www_redirect`). -/
+def TrustedHostReject : Prop :=
+  ∀ (hosts : List String) (www : Bool) (r : Request),
+    trustedHostDecision hosts www r = .reject ↔
+      "*" ∉ hosts ∧ ∀ h p, (r.headers.get? "host").bind parseHostHeader = some (h, p) →
+        (∀ q ∈ hosts, hostMatches h q = false) ∧ ¬(www = true ∧ ("www." ++ h) ∈ hosts)
+
+/-- A rejected request gets `400 Invalid host header` and never reaches the
+application. -/
+def TrustedHostReject400 : Prop :=
+  ∀ (hosts : List String) (www : Bool) (hv : ∀ p ∈ hosts, ValidHostPattern p) (app : App) (r : Request),
+    trustedHostDecision hosts www r = .reject →
+      TrustedHostMiddleware hosts www hv app r = pure (PlainTextResponse "Invalid host header" (status_code := 400))
+
+/-- A plain `http`/`ws` request with an authority is redirected (`307`) to
+the same URL with `https`/`wss`, the port dropped when it is 80 or 443; any
+other scheme reaches the application. -/
+def HttpsRedirect : Prop :=
+  ∀ (app : App) (r : Request),
+    (r.scheme = "http" ∨ r.scheme = "ws" → r.url.netloc ≠ "" →
+      HTTPSRedirectMiddleware app r = pure (RedirectResponse (toString { r.url with
+        scheme := if r.url.scheme == "ws" then "wss" else "https",
+        netloc := if r.url.port == some 80 || r.url.port == some 443 then r.url.hostname.getD "" else r.url.netloc })
+        (status_code := 307))) ∧
+    (r.scheme ≠ "http" → r.scheme ≠ "ws" → HTTPSRedirectMiddleware app r = app r)
+
+/-- A CORS preflight is answered by the middleware, never the application,
+and is `200` exactly when nothing is disallowed: the origin (by `*`,
+`allow_origin_regex` under `re.fullmatch`, or the list), the method, every
+requested header, and private-network access. -/
+def CorsPreflight : Prop :=
+  ∀ (c : CORSConfig) (app : App) (r : Request), CORSConfig.isPreflight r = true →
+    corsMiddleware c app r = pure (c.preflight r.headers) ∧
+    ((c.preflight r.headers).status_code = 200 ↔
+      c.isAllowedOrigin ((r.headers.get? "origin").getD "") = true ∧
+      ((r.headers.get? "access-control-request-method").getD "") ∈ c.allowMethods ∧
+      (∀ hs, r.headers.get? "access-control-request-headers" = some hs → c.allowAllHeaders = true ∨ c.headersAllowed hs = true) ∧
+      ((r.headers.get? "access-control-request-private-network").isSome → c.allowPrivateNetwork = true))
+
+/-- The allowed origins: `*`, a full match of `allow_origin_regex`, or one
+listed. -/
+def CorsAllowedOrigin : Prop :=
+  ∀ (origins methods headers : List String) (cred : Bool) (rx : Option PyRe.Pattern) (pn : Bool)
+    (expose : List String) (maxAge : Nat) (o : String),
+    (corsConfig origins methods headers cred rx pn expose maxAge).isAllowedOrigin o = true ↔
+      "*" ∈ origins ∨ (∃ p, rx = some p ∧ Regex.Matches p.re none o.toList none) ∨ o ∈ origins
 
 end LeanStarlette.Spec

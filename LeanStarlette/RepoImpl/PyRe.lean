@@ -368,6 +368,18 @@ def parse (p : String) : Except Error Re := do
   | [] => if size r > maxNodes then .error (.unsupported s!"expanded pattern above {maxNodes} nodes") else .ok r
   | _ => .error (.invalid "unbalanced parenthesis")
 
+/-- A pattern and its parse: what `allow_origin_regex` takes. Build one with
+`re!"..."` (checked when the file is elaborated) or `Pattern.compile`. -/
+structure Pattern where
+  source : String
+  re : Re
+
+/-- **`re.compile(pattern)`** at run time: the pattern, or why it is refused. -/
+def Pattern.compile (s : String) : Except Error {p : Pattern // p.source = s ∧ parse s = .ok p.re} :=
+  match h : parse s with
+  | .ok r => .ok ⟨⟨s, r⟩, rfl, by simp⟩
+  | .error e => .error e
+
 /-- **`re.compile(pattern).fullmatch`**: the pattern compiled once in
 `Mode.full`. -/
 def compile (p : String) : Except Error (Regex.Matcher K) := (parse p).map (·.compile .full)

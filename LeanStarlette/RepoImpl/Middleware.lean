@@ -1,4 +1,5 @@
 import LeanStarlette.RepoImpl.Applications
+import LeanStarlette.RepoImpl.PyRe
 
 /-!
 # RepoImpl: middleware (`starlette/middleware/`)
@@ -19,10 +20,6 @@ them (`Proofs/Middleware.lean`).
 namespace LeanStarlette
 
 /-! ## The stack -/
-
-/-- `build_middleware_stack`'s user part: the first middleware in the list
-is the outermost, so it sees the request first and the response last. -/
-def middlewareStack (ms : List Middleware) (app : App) : App := ms.foldr (fun m acc => m acc) app
 
 /-- `BaseHTTPMiddleware(app, dispatch)`: `dispatch(request, call_next)`,
 where `call_next` runs the rest of the stack. -/
@@ -127,6 +124,8 @@ structure CORSConfig where
   allowAllOrigins : Bool
   allowAllHeaders : Bool
   allowCredentials : Bool
+  /-- `allow_origin_regex`, compiled for `re.fullmatch`. -/
+  allowOriginRegex : Option (Keel.Regex.Matcher PyRe.K) := none
   allowPrivateNetwork : Bool
   preflightExplicitAllowOrigin : Bool
   simpleHeaders : List (String × String)
@@ -135,6 +134,7 @@ structure CORSConfig where
 /-- `CORSMiddleware.__init__`. -/
 def corsConfig (allow_origins : List String := []) (allow_methods : List String := ["GET"])
     (allow_headers : List String := []) (allow_credentials : Bool := false)
+    (allow_origin_regex : Option PyRe.Pattern := none)
     (allow_private_network : Bool := false) (expose_headers : List String := [])
     (max_age : Nat := 600) : CORSConfig :=
   let allowMethods := if allow_methods.contains "*" then corsAllMethods else allow_methods
@@ -152,6 +152,7 @@ def corsConfig (allow_origins : List String := []) (allow_methods : List String 
     (if allow_credentials then [("Access-Control-Allow-Credentials", "true")] else [])
   { allowOrigins := allow_origins, allowMethods, allowHeaders := headersSorted.map lowerAscii,
     allowAllOrigins, allowAllHeaders, allowCredentials := allow_credentials,
+    allowOriginRegex := allow_origin_regex.map (·.re.compile .full),
     allowPrivateNetwork := allow_private_network, preflightExplicitAllowOrigin := explicit,
     simpleHeaders := simple, preflightHeaders := preflight }
 
@@ -159,7 +160,7 @@ namespace CORSConfig
 
 /-- `is_allowed_origin`. -/
 def isAllowedOrigin (c : CORSConfig) (origin : String) : Bool :=
-  c.allowAllOrigins || c.allowOrigins.contains origin
+  c.allowAllOrigins || (c.allowOriginRegex.map (·.test origin)).getD false || c.allowOrigins.contains origin
 
 /-- Whether every requested header is allowed (`allow_headers`, any case,
 spaces trimmed). -/
@@ -219,18 +220,23 @@ def isPreflight (r : Request) : Bool :=
 
 end CORSConfig
 
-/-- **`CORSMiddleware(app, allow_origins=(), allow_methods=("GET",),
-allow_headers=(), allow_credentials=False, allow_private_network=False,
-expose_headers=(), max_age=600)`**. -/
-def CORSMiddleware (allow_origins : List String := []) (allow_methods : List String := ["GET"])
-    (allow_headers : List String := []) (allow_credentials : Bool := false)
-    (allow_private_network : Bool := false) (expose_headers : List String := [])
-    (max_age : Nat := 600) : Middleware := fun app req =>
-  let c := corsConfig allow_origins allow_methods allow_headers allow_credentials allow_private_network
-    expose_headers max_age
+/-- `CORSMiddleware` on a built configuration. -/
+def corsMiddleware (c : CORSConfig) : Middleware := fun app req =>
   if CORSConfig.isPreflight req then pure (c.preflight req.headers)
   else do
     let resp ← app req
     return { resp with headers := c.responseHeaders (req.headers.get? "origin") resp.headers }
+
+/-- **`CORSMiddleware(app, allow_origins=(), allow_methods=("GET",),
+allow_headers=(), allow_credentials=False, allow_origin_regex=None,
+allow_private_network=False, expose_headers=(), max_age=600)`**. The
+configuration, and the regular expression, are built once. -/
+def CORSMiddleware (allow_origins : List String := []) (allow_methods : List String := ["GET"])
+    (allow_headers : List String := []) (allow_credentials : Bool := false)
+    (allow_origin_regex : Option PyRe.Pattern := none)
+    (allow_private_network : Bool := false) (expose_headers : List String := [])
+    (max_age : Nat := 600) : Middleware :=
+  corsMiddleware (corsConfig allow_origins allow_methods allow_headers allow_credentials allow_origin_regex
+    allow_private_network expose_headers max_age)
 
 end LeanStarlette

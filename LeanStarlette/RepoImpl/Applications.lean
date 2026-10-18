@@ -33,6 +33,10 @@ abbrev ExceptionHandler := Request → Exception → AppM Response
 /-- A middleware: an `App` wrapped around an `App` (`Middleware(cls, ...)`). -/
 abbrev Middleware := App → App
 
+/-- `build_middleware_stack`'s user part: the first middleware in the list
+is the outermost, so it sees the request first and the response last. -/
+def middlewareStack (ms : List Middleware) (app : App) : App := ms.foldr (fun m acc => m acc) app
+
 /-- The default `HTTPException` handler. -/
 def defaultHTTPHandler : ExceptionHandler := fun _ e =>
   match e with
@@ -125,7 +129,7 @@ def app (a : Application) (report : Exception → IO Unit := fun _ => pure ()) :
     let r ← routerApp a.routes a.redirect_slashes req
     liftM (prepareFile req r)
   let inner := exceptionMiddleware handlers router
-  let stack := a.middleware.foldr (fun m acc => m acc) inner
+  let stack := middlewareStack a.middleware inner
   let stack := serverErrorMiddleware errorHandler a.debug (bodyLimit a.max_body_size stack) report
   stack { req with urlPathFor := fun n ps => (urlPathForList a.routes n ps).map fun u => (u.path, u.protocol) }
 

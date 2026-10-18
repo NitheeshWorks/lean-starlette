@@ -2,8 +2,6 @@ import LeanStarlette.APIs
 import LeanStarlette.Transport
 import LeanStarlette.TestClient
 import LeanStarlette.Proofs
-import LeanStarlette.RepoImpl.Middleware
-import LeanStarlette.RepoImpl.PyRe
 
 /-!
 # LeanStarlette
