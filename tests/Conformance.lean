@@ -921,17 +921,12 @@ def slowUploadCases : List Case := [
     ok (ms ≤ 4000 && !statusIs out "200")⟩
 ]
 
-/-- Urlencoded cases timed at about twice Starlette: lean-multipart 3263b06
-decodes and scans values at Python's speed. -/
+/-- Urlencoded cases timed at about twice Starlette: lean-multipart
+(3263b06 for values, ac3acbb for names) decodes and scans at Python's speed. -/
 def formTightCases : List String := [
   "test_urlencoded_field_exceeds_max_part_size_raise",
+  "test_urlencoded_field_name_exceeds_max_part_size_raise",
   "hostile: a 20 MB urlencoded value"]
-
-/-- A long field name still costs lean-multipart's raw urlencoded parser
-about 70 ms per MiB (upstream 3 ms; REQUEST on its card hqhryygmautu):
-bounded at 150 ms until that is fixed. -/
-def formSlowCases : List String := [
-  "test_urlencoded_field_name_exceeds_max_part_size_raise"]
 
 def formGoldenCase (line : Json) : Option Case := do
   let name ← (line.getObjVal? "name").bind Json.getStr?
@@ -952,8 +947,7 @@ def formGoldenCase (line : Json) : Option Case := do
   let content ← (line.getObjVal? "content").bind Json.getStr?
   let upMs : Option Nat := (line.getObjVal? "upstream_ms").map fun j =>
     (String.fromUTF8! (ByteArray.mk ((LeanJson.to_json j).val.toList.takeWhile (· != 46)).toArray)).toNat!
-  let bound := if formSlowCases.contains name then 150
-    else if formTightCases.contains name then 2 * (upMs.getD 0 + 1) + 4
+  let bound := if formTightCases.contains name then 2 * (upMs.getD 0 + 1) + 4
     else match upMs with | some u => max 20 (3 * u + 3) | none => 20
   pure ⟨s!"tests/test_formparsers.py (golden, Starlette 1.8.0)", s!"form: {name}", do
     let headers := match ct with | some c => [("content-type", c)] | none => []

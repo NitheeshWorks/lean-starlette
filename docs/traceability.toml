@@ -446,11 +446,11 @@ test = ["tests/Conformance.lean::slowUploadCases"]
 
 [[requirement]]
 id = "forms.urlencoded-speed"
-upstream = "tests/test_formparsers.py (multi-MiB urlencoded values)"
-title = "Urlencoded decoding is lean-multipart's unquotePlusLatin1 (3263b06): oversized values are timed at about 2x Starlette. A field name over 1 MiB still costs lean-multipart's raw parser about 70 ms per MiB (Starlette 3 ms); that one case is bounded at 150 ms until its fix"
-status = "partial"
-realises = ["LeanStarlette.parseRawForm"]
-test = ["tests/Conformance.lean::formSlowCases", "tests/Conformance.lean::formTightCases"]
+upstream = "tests/test_formparsers.py (multi-MiB urlencoded fields)"
+title = "Urlencoded parsing and decoding are lean-multipart's (ac3acbb): oversized values and names are timed at about 2x Starlette; an over-long name is refused after max_part_size + 1 bytes"
+status = "tested"
+realises = ["LeanStarlette.parseRawForm", "LeanStarlette.urlencodedItem"]
+test = ["tests/Conformance.lean::formTightCases"]
 
 [[requirement]]
 id = "testclient.client"
