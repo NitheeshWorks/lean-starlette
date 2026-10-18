@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# The whole local gate, in the order CI runs it. Exits on the first failure.
+# The whole local gate, in the order CI runs it. The verification gate
+# (scripts/Axioms.lean) checks every declaration on the compiled environment. The verification gate
+# (scripts/Axioms.lean) checks every declaration on the compiled environment. Exits on the first failure.
 #
 #   scripts/check.sh            # everything
-#   scripts/check.sh --quick    # build, sorry gate, axioms (no tests)
+#   scripts/check.sh --quick    # build and the verification gate (no tests)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 LIB=LeanStarlette
@@ -10,13 +12,7 @@ LIB=LeanStarlette
 echo "== build =="
 lake build
 
-echo "== sorry gate =="
-if grep -rn --include='*.lean' -w "sorry" "$LIB/"; then
-  echo "found 'sorry' under $LIB/: a proof is admitted" >&2; exit 1
-fi
-echo "none"
-
-echo "== axiom hygiene =="
+echo "== verification gate =="
 lake env lean --run scripts/Axioms.lean "$LIB"
 
 [[ "${1:-}" == "--quick" ]] && exit 0
