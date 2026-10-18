@@ -35,7 +35,7 @@
    "type": "git",
    "subDir": null,
    "scope": "",
-   "rev": "751fe76c9d1973f5b36102e503428864018975a6",
+   "rev": "b9b138aa1c5cd5fcf0bb5a2d2f13961a183a481b",
    "name": "LeanItsdangerous",
    "manifestFile": "lake-manifest.json",
    "inputRev": "main",
