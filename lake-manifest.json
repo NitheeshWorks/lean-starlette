@@ -45,7 +45,7 @@
    "type": "git",
    "subDir": null,
    "scope": "",
-   "rev": "ac3acbbfaf0ff14eca9e15af5e6dbe05d968dbc3",
+   "rev": "964594ab22a48ad2953df100cd005549d3cddac5",
    "name": "LeanMultipart",
    "manifestFile": "lake-manifest.json",
    "inputRev": "main",

@@ -845,8 +845,10 @@ def sendSlow (port : Nat) (pieces : List ByteArray) (pauseMs : UInt32) (hold : B
     background do
       for p in pieces do
         try c.sendAll #[p] catch _ => pure ()
-        (IO.sleep pauseMs : IO Unit)
-      if hold then (IO.sleep 20000 : IO Unit)
+        -- a timer, not `IO.sleep`: a blocked worker would starve the
+        -- in-process server when the pool has one or two threads
+        Std.Async.sleep (.ofNat pauseMs.toNat)
+      if hold then Std.Async.sleep (.ofNat 20000)
       if endWrite then try c.shutdown catch _ => pure ()
     let rec loop (acc : ByteArray) : Nat → Async ByteArray
       | 0 => pure acc
@@ -922,7 +924,7 @@ def slowUploadCases : List Case := [
 ]
 
 /-- Urlencoded cases timed at about twice Starlette: lean-multipart
-(3263b06 for values, ac3acbb for names) decodes and scans at Python's speed. -/
+(964594a) decodes and scans at Python's speed. -/
 def formTightCases : List String := [
   "test_urlencoded_field_exceeds_max_part_size_raise",
   "test_urlencoded_field_name_exceeds_max_part_size_raise",
@@ -955,6 +957,8 @@ def formGoldenCase (line : Json) : Option Case := do
     let r ← TestClient.request (formApp kind lim) "POST" "/" headers body
     let ms := (← IO.monoMsNow) - t0
     let good := r.status_code == status.toNat && r.text == content && ms ≤ bound
+    if formTightCases.contains name then
+      IO.println s!"      {ms} ms (upstream {upMs.getD 0} ms, bound {bound} ms)"
     unless good do
       IO.println s!"      got {r.status_code} in {ms} ms (bound {bound}) {(String.ofList (r.text.toList.take 300)).quote}"
       IO.println s!"      want {status} {(String.ofList (content.toList.take 300)).quote}"
