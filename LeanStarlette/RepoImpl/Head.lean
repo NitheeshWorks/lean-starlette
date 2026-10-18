@@ -132,7 +132,8 @@ def plainBodyLength (head : ByteArray) : Option (Nat × Nat) := do
 headers, so that `Std.Http` sees no body; `requestOfHead` names them back. -/
 def framingHeaders : List (String × String) :=
   [("content-length", "x-lean-starlette-content-length"),
-   ("transfer-encoding", "x-lean-starlette-transfer-encoding")]
+   ("transfer-encoding", "x-lean-starlette-transfer-encoding"),
+   ("expect", "x-lean-starlette-expect")]
 
 /-- The head (up to `e`) of a request whose body the transport has read:
 `Content-Length` and `Transfer-Encoding` renamed to their private names, in

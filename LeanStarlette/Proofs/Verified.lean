@@ -11,6 +11,7 @@ import LeanStarlette.Proofs.Middleware
 import LeanStarlette.Proofs.Cookies
 import LeanStarlette.Proofs.Sessions
 import LeanStarlette.Proofs.GZip
+import LeanStarlette.Proofs.Wire
 
 /-!
 # The harness: one `Verified<Layer>` structure per layer
@@ -135,5 +136,17 @@ theorem theVerifiedMiddleware : VerifiedMiddleware where
   setCookieDeleteCookie := fun r jar k v hk => ⟨set_cookie_receive r jar k v hk, delete_cookie_receive r jar k hk⟩
   sessionSignVerify := fun t d _ _ _ hage hi hk hh => session_sign_verify t d hage hi hk hh
   gzipMinimumSize := gzip_minimum_size
+
+/-- The server's responses on the wire (m8): chunked framing, `Connection:
+close`, no body for `HEAD`/`204`/`304`. -/
+structure VerifiedWire where
+  chunkedDecode : Spec.WireChunkedDecode
+  close : Spec.WireClose
+  noBody : Spec.WireNoBody
+
+theorem theVerifiedWire : VerifiedWire where
+  chunkedDecode := wire_chunked_decode
+  close := wire_close
+  noBody := wire_no_body
 
 end LeanStarlette

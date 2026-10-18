@@ -3,6 +3,7 @@ import LeanStarlette.APIs.Forms
 import LeanStarlette.APIs.TestClient
 import LeanStarlette.APIs.Middleware
 import LeanStarlette.Proofs.Chunked
+import LeanStarlette.RepoImpl.Wire
 
 /-!
 # Specifications: what the router and the responses promise
@@ -272,5 +273,23 @@ than `minimum_size` exactly as it was. -/
 def GzipMinimumSize : Prop :=
   ∀ (minimum_size : Nat) (exclude : List String) (gzip headOnly : Bool) (r : Response),
     r.stream = none → r.body.size < minimum_size → gzipResponse minimum_size exclude gzip headOnly r = pure r
+
+/-- The chunked frames written for a streamed body decode back to its
+non-empty pieces. -/
+def WireChunkedDecode : Prop :=
+  ∀ (cs : List ByteArray), (∀ c ∈ cs, c.size < LeanHttpx.H1.maxChunkSize) → ∀ rest : ByteArray,
+    LeanHttpx.H1.decodeChunked (wireChunked cs ++ rest) = some (cs.filter (0 < ·.size), rest)
+
+/-- A request that does not keep the connection gets `Connection: close`
+and the connection is not kept. -/
+def WireClose : Prop :=
+  ∀ (rq : WireRequest) (d : List (String × String)) (status : Nat) (hs : List (String × String)),
+    rq.keepAlive = false →
+      ("Connection", "close") ∈ (wireHead rq d status hs).fields ∧ (wireHead rq d status hs).keepAlive = false
+
+/-- `HEAD`, `204` and `304` responses have no body on the wire. -/
+def WireNoBody : Prop :=
+  ∀ (rq : WireRequest) (d : List (String × String)) (status : Nat) (hs : List (String × String)),
+    rq.method = "HEAD" ∨ status = 204 ∨ status = 304 → (wireHead rq d status hs).body = .none
 
 end LeanStarlette.Spec

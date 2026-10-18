@@ -10,7 +10,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 lake build bench
-for c in url200k urlValue20m mpValue20m mpFields50k mpFile50m chunked20m chunkedMpFile50m; do
+for c in url200k urlValue20m mpValue20m mpFields50k mpFile50m chunked20m chunkedMpFile50m expectMpFile10m; do
   ./.lake/build/bin/bench formmem "$c"
 done
 ./.lake/build/bin/bench m5bench

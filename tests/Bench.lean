@@ -199,6 +199,8 @@ def formCases : List (String × String × List (Unit → ByteArray) × String ×
   ("mpFile50m", "multipart/form-data; boundary=B",
     (fun _ => mpHeadB "f" (some "big.bin")) :: xPieces 50 ++ [fun _ => "\r\n--B--\r\n".toUTF8], "200", 2000, 700),
   ("chunked20m", "application/octet-stream", xPieces 20, "200", 300, 228),
+  ("expectMpFile10m", "multipart/form-data; boundary=B",
+    (fun _ => mpHeadB "f" (some "big.bin")) :: xPieces 10 ++ [fun _ => "\r\n--B--\r\n".toUTF8], "200", 200, 250),
   ("chunkedMpFile50m", "multipart/form-data; boundary=B",
     (fun _ => mpHeadB "f" (some "big.bin")) :: xPieces 50 ++ [fun _ => "\r\n--B--\r\n".toUTF8], "200", 780, 381)]
 
@@ -235,7 +237,9 @@ def formMem (name0 : String) : IO UInt32 := do
   let t0 ← IO.monoMsNow
   let chunked := name.startsWith "chunked"
   let te := if chunked then #["-H", "Transfer-Encoding: chunked"] else #[]
-  let res ← IO.Process.output { cmd := "curl", args := #["-s", "-i", "-X", "POST", "-H", s!"content-type: {ct}", "-H", "Expect:"] ++ te ++
+  -- `expect…` cases keep curl's `Expect: 100-continue` (sent for bodies over 1 MiB)
+  let expect := if name.startsWith "expect" then #[] else #["-H", "Expect:"]
+  let res ← IO.Process.output { cmd := "curl", args := #["-s", "-i", "-X", "POST", "-H", s!"content-type: {ct}"] ++ expect ++ te ++
     #["--data-binary", s!"@{path}", s!"http://127.0.0.1:{port}/"] }
   let ms := (← IO.monoMsNow) - t0
   IO.FS.removeDirAll dir
@@ -244,7 +248,8 @@ def formMem (name0 : String) : IO UInt32 := do
   let _ := body
   let peak ← peakKB
   let text := (String.fromUTF8? out).getD ""
-  let status := ((text.splitOn " ").getD 1 "")
+  -- the final response's status (after any `100 Continue`)
+  let status := (((text.splitOn "HTTP/1.1 ").getLastD "").splitOn " ").headD ""
   IO.println s!"RESULT {name} size={size} status={status} ms={ms} peakMB={peak / 1024} (before the request {base / 1024} MB; bounds {msBound} ms, {mbBound} MB)"
   let mut ok := true
   if status != want then IO.println s!"  FAIL status {status}, want {want}"; ok := false

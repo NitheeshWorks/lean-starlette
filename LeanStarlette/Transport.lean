@@ -2,6 +2,7 @@ import Std.Http
 import LeanStarlette.APIs
 import LeanStarlette.RepoImpl.Head
 import LeanStarlette.RepoImpl.Chunked
+import LeanStarlette.RepoImpl.Wire
 
 /-!
 # Transport: serving an application with `Std.Http`
@@ -10,18 +11,27 @@ The effectful module for the network. It converts between Lean core's
 `Std.Http` messages and this library's pure `Request` and `Response`, and
 serves an `Application`.
 
-Each connection goes through `serveConnection`:
+Each connection goes through `serveRequests`, once per request while the
+connection is kept alive (as uvicorn: HTTP/1.1 without `Connection: close`,
+no exception in the application, a body of known length or chunked):
 
-1. Read the request head (up to `maxHeadBytes`, within `headerTimeout`).
+1. Read the request head (up to `maxHeadBytes`; the first within
+   `headerTimeout`, a later one within `keepAliveTimeout`), starting from
+   any bytes of it already received (pipelining).
 2. `rewriteHead` (pure, `RepoImpl/Head.lean`) moves the raw request target
    into `targetHeader`, so that `Std.Http`'s request-target parser, whose
    limits `Std.Http.Config` does not expose, never sees it; or it answers
    414/400 as uvicorn does.
-3. `Std.Http.Server.serveConnection` runs one exchange over a transport that
-   replays the head (`Replay`). Keep-alive is off, because only the first
-   request line of a connection is rewritten (see `CONTRIBUTING.md`).
-4. Error responses `Std.Http` writes itself (413, 431, 400) get the body
-   uvicorn sends with them.
+3. The transport reads the body itself (`requestOutcome`), after sending
+   `100 Continue` to a client that expects it, and keeps what follows the
+   body for the next request.
+4. `Std.Http.Server.serveConnection` parses and checks the head alone
+   (`Replay` gives it nothing more), and calls the application. Error
+   responses it writes before the application runs (400, 413) get the body
+   uvicorn sends with them. The application's response is written by the
+   transport, as uvicorn and h11 write it (`writeResponse`, `wireHead` in
+   `RepoImpl/Wire.lean`): reason phrases, header order and spelling,
+   framing and `Connection` handling.
 
 `acceptLoop` is the one unbounded loop: a server accepts until it is
 stopped. It is the single entry of `scripts/gate-allow.txt`; everything it
@@ -136,11 +146,14 @@ def headContentLength (head : Std.Http.Request.Head) : Option Nat :=
     fun (_, v) => (toString v).trimAscii.toString.toNat?
 
 /-- The `Std.Http` handler for an application: read the body (up to the
-application's `max_body_size`, when it has one), call the app, send the
-response. `handled` records that the application ran, so the transport can
-tell its own error responses from the application's. -/
+application's `max_body_size`, when it has one), call the app, and write the
+response with `write` (the transport's own writer, as uvicorn frames it).
+`Std.Http` gets an empty response, which the transport drops. `handled`
+records that the application ran, so the transport can tell its own error
+responses from the application's. -/
 def Application.toHandler (a : Application) (handled : IO.Ref Bool)
-    (client : Option (String × Nat) := none) (preread : Option (IO.Ref (Option ByteArray)) := none) :
+    (client : Option (String × Nat) := none) (preread : Option (IO.Ref (Option ByteArray)) := none)
+    (write : Option (Response → Async Unit) := none) (report : Exception → IO Unit := fun _ => pure ()) :
     Std.Http.Server.StatelessHandler :=
   Std.Http.Server.Handler.ofFn fun req => do
     handled.set true
@@ -153,14 +166,20 @@ def Application.toHandler (a : Application) (handled : IO.Ref Bool)
       | none =>
         let cap := min ((headContentLength req.line).getD 0) (a.max_body_size.getD (64 * 1024 * 1024) + 1)
         pure (← readBodyInto req.body cap limit (cap + 1024 * 1024 * 1024), false)
-    let response ← a.call (requestOfHead req.line body client (preread := pre))
-    toHttpResponse response
+    let response ← a.call (requestOfHead req.line body client (preread := pre)) report
+    match write with
+    | some w =>
+      w response
+      toHttpResponse (PlainTextResponse "")
+    | none => toHttpResponse response
 
 /-! ## One connection -/
 
-/-- A transport that first yields a fixed prefix (the rewritten head), then
-the underlying connection's bytes; and that gives `Std.Http`'s own empty
-error responses uvicorn's bodies. -/
+/-- What `Std.Http` sees of a connection: the rewritten head of one request
+and then the end of input (the transport reads bodies and later requests
+itself). Before the application runs, what `Std.Http` writes (its error
+responses) goes through, with uvicorn's bodies; after, nothing does (the
+transport writes the response). Closing is the transport's. -/
 structure Replay (t : Type) where
   inner : t
   pending : IO.Ref (Option ByteArray)
@@ -177,30 +196,28 @@ def decorateError (handled : Bool) (data : Array ByteArray) : Array ByteArray :=
   | none => data
 
 instance [Transport t] : Transport (Replay t) where
-  recv r n := do
-    match ← r.pending.swap none with
-    | some b => pure (some b)
-    | none => Transport.recv r.inner n
-  sendAll r data := do Transport.sendAll r.inner (decorateError (← r.handled.get) data)
-  recvSelector r n := {
+  recv r _ := r.pending.swap none
+  sendAll r data := do
+    -- once the application ran, the transport has written its response
+    unless ← r.handled.get do Transport.sendAll r.inner (decorateError false data)
+  recvSelector r _ := {
     tryFn := do
       match ← r.pending.get with
       | some b => r.pending.set none; pure (some (some b))
-      | none => (Transport.recvSelector r.inner n).tryFn
+      | none => pure (some none)
     registerFn := fun w => do
-      match ← r.pending.get with
-      | some b => w.race (pure ()) fun p => do r.pending.set none; p.resolve (.ok (some b))
-      | none => r.innerRegistered.set true; (Transport.recvSelector r.inner n).registerFn w
-    unregisterFn := do
-      if ← r.innerRegistered.swap false then (Transport.recvSelector r.inner n).unregisterFn }
-  close r := Transport.close r.inner
+      let b ← r.pending.swap none
+      w.race (pure ()) fun p => p.resolve (.ok b)
+    unregisterFn := pure () }
+  close _ := pure ()
 
 /-- How reading a head ended. -/
 inductive HeadRead where
   | complete (bytes : ByteArray)
   | eof
   | tooLarge
-  | timeout
+  /-- No complete head in time; `got` bytes of one had arrived. -/
+  | timeout (got : Nat)
 
 /-- Read until the head is complete, racing a deadline. A head (request line,
 headers and the blank line) longer than `buf.size + budget` bytes is
@@ -213,7 +230,7 @@ def readHead [Transport t] (c : t) (deadline : Std.Async.Selector Unit) (buf : B
     .case (Transport.recvSelector c 65536) (fun x => pure (some x)),
     .case deadline (fun _ => pure none)]
   match r with
-  | none => return .timeout
+  | none => return .timeout buf.size
   | some none => return .eof
   | some (some chunk) =>
     if hc : chunk.size = 0 then return .eof else
@@ -260,7 +277,7 @@ def joinChunks (first : ByteArray) (chunks : Array ByteArray) : ByteArray :=
 inductive ChunkedRead where
   /-- The raw pieces received (the last cut where the body ends) and the
   decoded size. -/
-  | complete (pieces : Array ByteArray) (size : Nat)
+  | complete (pieces : Array ByteArray) (size : Nat) (rest : ByteArray)
   | timeout
   | eof
   | bad (message : String)
@@ -284,7 +301,7 @@ def readChunked [Transport t] (c : t) (timeout : Std.Time.Millisecond.Offset) (s
   | some (some piece) =>
     if hc : piece.size = 0 then return .eof else
     match st.feed piece got limit with
-    | (.done used, got') => return .complete (acc.push (piece.extract 0 used)) got'
+    | (.done used, got') => return .complete (acc.push (piece.extract 0 used)) got' (piece.extract used piece.size)
     | (.bad m, _) => return .bad m
     | (.tooLarge, _) => return .tooLarge
     | (st', got') =>
@@ -293,28 +310,31 @@ def readChunked [Transport t] (c : t) (timeout : Std.Time.Millisecond.Offset) (s
 termination_by cap - raw
 
 /-- What the transport does with a request: hand `Std.Http` these bytes
-(with the body it read itself, if any, for the application), or answer with
-a status. -/
+(with the body it read itself, if any, for the application, and the bytes
+received past it, the start of the next request), or answer with a status.
+`keep`: the connection may serve another request afterwards (the transport
+read the body and knows where the next request starts). -/
 inductive ChunkedOutcome where
-  | forward (bytes : ByteArray) (body : Option ByteArray := none)
+  | forward (bytes : ByteArray) (body : Option ByteArray := none) (rest : ByteArray := .empty) (keep : Bool := false)
   | reject (status : Nat) (reason body : String)
   /-- Close without a response (uvicorn, when a chunked body ends early). -/
   | drop
 
-/-- The body after the head of a pre-read request: the bytes received after
-`e`, then the pieces, at most `len` of them. -/
-def prereadBody (bytes : ByteArray) (e : Nat) (pieces : Array ByteArray) (len : Nat) : ByteArray :=
+/-- The body after the head of a pre-read request (the bytes received after
+`e`, then the pieces), cut at `len`, and the bytes after it. -/
+def prereadBody (bytes : ByteArray) (e : Nat) (pieces : Array ByteArray) (len : Nat) : ByteArray × ByteArray :=
   let b := joinChunks (bytes.extract e bytes.size) pieces
-  if b.size ≤ len then b else b.extract 0 len
+  if b.size ≤ len then (b, .empty) else (b.extract 0 len, b.extract len b.size)
 
 /-- Decode the received bytes (`bytes` up to the body's start `e`, then the
 pieces) with the verified decoder into a buffer of `size`, the scanner's
 decoded size; the two must agree, or the request is refused. `Std.Http` gets
-the head alone. -/
-def chunkedRequest (bytes : ByteArray) (e : Nat) (pieces : Array ByteArray) (size : Nat) : ChunkedOutcome :=
+the head alone; `rest` follows the body. -/
+def chunkedRequest (bytes : ByteArray) (e : Nat) (pieces : Array ByteArray) (size : Nat) (rest : ByteArray) :
+    ChunkedOutcome :=
   match decodeChunkedBody (joinChunks bytes pieces) e (ByteArray.emptyWithCapacity size) with
   | some (out, _) =>
-    if out.size == size then .forward (hideFraming bytes e) (some out)
+    if out.size == size then .forward (hideFraming bytes e) (some out) rest true
     else .reject 400 "Bad Request" "Invalid HTTP request received."
   | none => .reject 400 "Bad Request" "Invalid HTTP request received."
 
@@ -331,69 +351,143 @@ def transportConfig (base : Std.Http.Config) : Std.Http.Config :=
     maxStartLineLength := maxHeadBytes
     maxUriLength := maxHeadBytes }
 
-/-- Serve one connection: read and rewrite the head, then let `Std.Http`
-run the exchange. -/
+/-- uvicorn's default fields: `date` (with `generateDate`) and `server`
+(`serverName`; uvicorn's is `uvicorn`, `Std.Http`'s default `LeanHTTP/1.1`). -/
+def defaultFields (config : Std.Http.Config) : IO (List (String × String)) := do
+  let date ← if config.generateDate then
+      pure [("date", wireDate (← Std.Time.Timestamp.now).toSecondsSinceUnixEpoch.val)]
+    else pure []
+  return date ++ (config.serverName.map fun v => ("server", toString v)).toList
+
+/-- Write a response as uvicorn does (`wireHead`), its body in the framing
+the head chose, then run its background tasks. Returns whether the
+connection can serve another request. -/
+def writeResponse [Transport t] (conn : t) (config : Std.Http.Config) (rq : WireRequest) (r : Response) :
+    Async Bool := do
+  let h := wireHead rq (← defaultFields config) r.status_code r.headers.raw
+  let gen : ContentStream := r.stream.getD fun send => if r.body.size > 0 then send r.body else pure ()
+  try
+    match h.body with
+    | .none => Transport.sendAll conn #[h.bytes]
+    | .raw | .untilClose =>
+      if r.stream.isNone then Transport.sendAll conn #[h.bytes, r.body]
+      else
+        Transport.sendAll conn #[h.bytes]
+        gen fun c => if c.size > 0 then Transport.sendAll conn #[c] else pure ()
+    | .chunked =>
+      Transport.sendAll conn #[h.bytes]
+      gen fun c => if c.size > 0 then Transport.sendAll conn #[chunkFrame c] else pure ()
+      Transport.sendAll conn #[lastChunkFrame]
+  catch _ => return false
+  try r.background.run catch _ => pure ()
+  return h.keepAlive && h.body != .untilClose
+
+/-- The outcome for a request the transport has the head of: read its body
+(sending `100 Continue` first when the client waits for it and none of the
+body has come), or leave it to `Std.Http`. -/
+def requestOutcome [Transport t] (conn : t) (config : Std.Http.Config) (bytes : ByteArray) (expect : Bool) :
+    Async ChunkedOutcome := do
+  let limit := config.maxBodySize
+  -- uvicorn sends it when the application first reads the body, whether or
+  -- not body bytes have already arrived; here the body is read before the
+  -- application runs
+  let continue_ : Async Unit := if expect then Transport.sendAll conn #[continueBytes] else pure ()
+  match plainBodyLength bytes with
+  | some (e, len) =>
+    if len ≤ limit then
+      if len > 0 then continue_
+      match ← readBody conn config.lingeringTimeout #[] bytes.size (e + len) with
+      | .complete cs =>
+        let (body, rest) := prereadBody bytes e cs len
+        pure (.forward (hideFraming bytes e) (some body) rest true)
+      | .eof cs => pure (.forward (hideFraming bytes e) (some (prereadBody bytes e cs len).1))
+      | .timeout => pure (.reject 408 "Request Timeout" "Request Timeout")
+    else pure (.forward bytes)
+  | none =>
+    match chunkedBodyStart bytes with
+    | some e =>
+      let early := bytes.extract e bytes.size
+      match ChunkScan.feed (.sizeLine .empty) early 0 limit with
+      | (.done used, got) =>
+        continue_
+        pure (chunkedRequest (bytes.extract 0 (e + used)) e #[] got (early.extract used early.size))
+      | (.bad _, _) => pure (.reject 400 "Bad Request" "Invalid HTTP request received.")
+      | (.tooLarge, _) => pure (.reject 413 "Content Too Large" "Content Too Large")
+      | (st, got) =>
+        continue_
+        match ← readChunked conn config.lingeringTimeout st #[] got limit early.size (2 * limit + 1024 * 1024) with
+        | .complete pieces size rest => pure (chunkedRequest bytes e pieces size rest)
+        | .timeout => pure (.reject 408 "Request Timeout" "Request Timeout")
+        | .eof => pure .drop
+        | .bad _ => pure (.reject 400 "Bad Request" "Invalid HTTP request received.")
+        | .tooLarge => pure (.reject 413 "Content Too Large" "Content Too Large")
+    | none =>
+      match findHeadEnd bytes 0 with
+      | some e =>
+        let hs := (headerLines bytes e).map splitHeaderLine
+        let framed := hs.any fun (n, _) => n == "content-length".toUTF8.toList || n == "transfer-encoding".toUTF8.toList
+        -- no body: Std.Http gets the head, the rest is the next request
+        if framed then pure (.forward bytes)
+        else pure (.forward (hideFraming bytes e) (some .empty) (bytes.extract e bytes.size) true)
+      | none => pure (.forward bytes)
+
+/-- Serve requests on one connection until it is not kept alive, at most
+`fuel` of them (`config.maxRequests`). `pending` are bytes already received
+of the next request. The first request's head must arrive within
+`headerTimeout` (else `408`); a later one within `keepAliveTimeout`, else the
+connection is closed quietly, as uvicorn does. -/
+def serveRequests [Transport t] (a : Application) (conn : t) (config : Std.Http.Config)
+    (client : Option (String × Nat)) (extensions : Extensions) :
+    Nat → ByteArray → Bool → Async Unit
+  | 0, _, _ => pure ()
+  | fuel + 1, pending, first => do
+    let wait := if first then config.headerTimeout else config.keepAliveTimeout.val
+    let deadline ← Std.Async.Selector.sleep wait
+    let read ← match findHeadEnd pending 0 with
+      | some e => pure (if e ≤ maxHeadBytes then HeadRead.complete pending else .tooLarge)
+      | none => readHead conn deadline pending (maxHeadBytes - min maxHeadBytes pending.size)
+    match read with
+    | .eof => pure ()
+    | .timeout got =>
+      if first || got > 0 then Transport.sendAll conn #[rawResponse 408 "Request Timeout" "Request Timeout"]
+    | .tooLarge =>
+      Transport.sendAll conn #[rawResponse 431 "Request Header Fields Too Large" "Request Header Fields Too Large"]
+    | .complete head =>
+      let e0 := (findHeadEnd head 0).getD head.size
+      let rq := wireRequestOf head e0
+      match rewriteHead head with
+      | .reject code reason body => Transport.sendAll conn #[rawResponse code reason body]
+      | .forward bytes =>
+        -- A body framed by a plain Content-Length is read here, whole: Std.Http's
+        -- reader copies its unconsumed input on every receive, which is quadratic
+        -- in a body that arrives in many reads (20 MB: 5.5 s; here: linear). A
+        -- chunked body is read the same way and its framing decoded once by the
+        -- verified decoder (`decodeChunkedBody_encode`). Std.Http then gets the
+        -- head alone, its framing headers renamed (`hideFraming`), and the
+        -- application the body, so Std.Http never copies it.
+        match ← requestOutcome conn config bytes (expectsContinue head e0) with
+        | .drop => pure ()
+        | .reject code reason body => Transport.sendAll conn #[rawResponse code reason body]
+        | .forward bytes body rest keep =>
+          let handled ← IO.mkRef false
+          let preread ← IO.mkRef body
+          let kept ← IO.mkRef false
+          -- uvicorn closes the connection after an exception in the application
+          let failed ← IO.mkRef false
+          let write (r : Response) : Async Unit := do kept.set (← writeResponse conn config rq r)
+          let replay : Replay t := ⟨conn, ← IO.mkRef (some bytes), ← IO.mkRef false, handled⟩
+          Std.Http.Server.serveConnection replay (a.toHandler handled client (some preread) (some write) (fun _ => failed.set true))
+            (transportConfig config) extensions |>.run
+          if keep && (← handled.get) && (← kept.get) && !(← failed.get) then
+            serveRequests a conn config client extensions fuel rest false
+
+/-- Serve one connection (`serveRequests`), then close it. -/
 def serveOne [Transport t] (a : Application) (conn : t) (config : Std.Http.Config)
     (client : Option (String × Nat) := none) (extensions : Extensions := .empty)
     (shutdown : Async Unit := pure ()) : Async Unit := do
-  let deadline ← Std.Async.Selector.sleep config.headerTimeout
-  match ← readHead conn deadline .empty maxHeadBytes with
-  | .eof => Transport.close conn; shutdown
-  | .timeout =>
-    Transport.sendAll conn #[rawResponse 408 "Request Timeout" "Request Timeout"]
-    Transport.close conn; shutdown
-  | .tooLarge =>
-    Transport.sendAll conn #[rawResponse 431 "Request Header Fields Too Large" "Request Header Fields Too Large"]
-    Transport.close conn; shutdown
-  | .complete head =>
-    match rewriteHead head with
-    | .reject code reason body =>
-      Transport.sendAll conn #[rawResponse code reason body]
-      Transport.close conn; shutdown
-    | .forward bytes =>
-      -- A body framed by a plain Content-Length is read here, whole: Std.Http's
-      -- reader copies its unconsumed input on every receive, which is quadratic
-      -- in a body that arrives in many reads (20 MB: 5.5 s; here: linear). A
-      -- chunked body is read the same way and its framing decoded once by the
-      -- verified decoder (`decodeChunkedBody_encode`). Std.Http then gets the
-      -- head alone, its framing headers renamed (`hideFraming`), and the
-      -- application the body, so Std.Http never copies it.
-      let limit := config.maxBodySize
-      let outcome ← match plainBodyLength bytes with
-        | some (e, len) =>
-          if len ≤ limit then
-            match ← readBody conn config.lingeringTimeout #[] bytes.size (e + len) with
-            | .complete cs => pure (ChunkedOutcome.forward (hideFraming bytes e) (some (prereadBody bytes e cs len)))
-            | .eof cs => pure (.forward (hideFraming bytes e) (some (prereadBody bytes e cs len)))
-            | .timeout => pure (.reject 408 "Request Timeout" "Request Timeout")
-          else pure (.forward bytes)
-        | none =>
-          match chunkedBodyStart bytes with
-          | none => pure (.forward bytes)
-          | some e =>
-            let early := bytes.extract e bytes.size
-            match ChunkScan.feed (.sizeLine .empty) early 0 limit with
-            | (.done _, got) => pure (chunkedRequest bytes e #[] got)
-            | (.bad _, _) => pure (.reject 400 "Bad Request" "Invalid HTTP request received.")
-            | (.tooLarge, _) => pure (.reject 413 "Content Too Large" "Content Too Large")
-            | (st, got) =>
-              match ← readChunked conn config.lingeringTimeout st #[] got limit early.size (2 * limit + 1024 * 1024) with
-              | .complete pieces size => pure (chunkedRequest bytes e pieces size)
-              | .timeout => pure (.reject 408 "Request Timeout" "Request Timeout")
-              | .eof => pure .drop
-              | .bad _ => pure (.reject 400 "Bad Request" "Invalid HTTP request received.")
-              | .tooLarge => pure (.reject 413 "Content Too Large" "Content Too Large")
-      match outcome with
-      | .drop => Transport.close conn; shutdown
-      | .reject code reason body =>
-        Transport.sendAll conn #[rawResponse code reason body]
-        Transport.close conn; shutdown
-      | .forward bytes body =>
-        let handled ← IO.mkRef false
-        let preread ← IO.mkRef body
-        let replay : Replay t := ⟨conn, ← IO.mkRef (some bytes), ← IO.mkRef false, handled⟩
-        Std.Http.Server.serveConnection replay (a.toHandler handled client (some preread)) (transportConfig config) extensions |>.run
-        shutdown
+  serveRequests a conn config client extensions config.maxRequests .empty true
+  Transport.close conn
+  shutdown
 
 /-! ## The server -/
 
@@ -413,10 +507,17 @@ partial def acceptLoop (a : Application) (server : Socket.Server) (config : Std.
     finally permits.release
   acceptLoop a server config permits
 
+/-- The server's defaults: uvicorn's 5 s keep-alive timeout and no
+practical limit on requests per connection; `Std.Http`'s for the rest
+(`server: LeanHTTP/1.1`; pass `serverName := some (.ofString! "uvicorn")`
+for uvicorn's bytes exactly). -/
+def serverDefaults : Std.Http.Config :=
+  { keepAliveTimeout := ⟨5000, by decide⟩, maxRequests := 1000000 }
+
 /-- `uvicorn.run(app, host=..., port=...)`: serve until the process is
 stopped. -/
 def Application.run (a : Application) (host : String := "127.0.0.1") (port : Nat := 8000)
-    (config : Std.Http.Config := {}) : IO Unit := do
+    (config : Std.Http.Config := serverDefaults) : IO Unit := do
   let some ip := Std.Net.IPv4Addr.ofString host
     | throw (IO.userError s!"not an IPv4 address: {host}")
   let addr : Std.Net.SocketAddress := .v4 ⟨ip, port.toUInt16⟩

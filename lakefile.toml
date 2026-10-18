@@ -10,7 +10,7 @@
     # Test modules the executables import (not part of the library).
     [[lean_lib]]
     name = "TestSupport"
-    roots = ["tests.MiddlewareUsage", "tests.MiddlewareCases"]
+    roots = ["tests.MiddlewareUsage", "tests.MiddlewareCases", "tests.FramingCases"]
 
     # Property tests for what is tested rather than proved. No dependencies, runs
     # in well under a second: `lake exe props [seed]`.

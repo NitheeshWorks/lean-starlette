@@ -1,6 +1,7 @@
 import LeanStarlette
 import tests.MiddlewareUsage
 import tests.MiddlewareCases
+import tests.FramingCases
 
 /-!
 # Conformance cases
@@ -527,13 +528,13 @@ def contains (s t : String) : Bool := (s.splitOn t).length > 1
 def transportCases : List Case := [
   ⟨"tests/test_routing.py::test_router [std.http]", "GET over HTTP/1.1", do
     let out ← raw routingApp "GET /users/tom HTTP/1.1\r\nHost: testserver\r\nConnection: close\r\n\r\n"
-    ok (out.startsWith "HTTP/1.1 200 OK" && contains out "Content-Length: 8" && out.endsWith "User tom")⟩,
+    ok (out.startsWith "HTTP/1.1 200 OK" && contains out "content-length: 8" && out.endsWith "User tom")⟩,
   ⟨"tests/test_routing.py::test_router [std.http]", "405 with Allow over HTTP/1.1", do
     let out ← raw routingApp "POST / HTTP/1.1\r\nHost: testserver\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc"
-    ok (out.startsWith "HTTP/1.1 405" && contains out "Allow: GET, HEAD" && out.endsWith "Method Not Allowed")⟩,
+    ok (out.startsWith "HTTP/1.1 405" && contains out "allow: GET, HEAD" && out.endsWith "Method Not Allowed")⟩,
   ⟨"tests/test_responses.py::test_head_method [std.http]", "HEAD keeps the length, drops the body", do
     let out ← raw routingApp "HEAD / HTTP/1.1\r\nHost: testserver\r\nConnection: close\r\n\r\n"
-    ok (out.startsWith "HTTP/1.1 200 OK" && contains out "Content-Length: 12" && out.endsWith "\r\n\r\n")⟩,
+    ok (out.startsWith "HTTP/1.1 200 OK" && contains out "content-length: 12" && out.endsWith "\r\n\r\n")⟩,
   ⟨"tests/test_requests.py::test_request_json [std.http]", "a JSON body over HTTP/1.1", do
     let a := echoApp fun r => do return json% {"json": (← r.json)}
     let out ← raw a "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"a\":\"123\"}"
@@ -1354,6 +1355,8 @@ def main : IO UInt32 := do
   let filesBehaviour := filesBehaviourCases (← makeFixture)
   let formGolden ← formGoldenCases
   let tcGolden ← tcGoldenCases
+  let framing := (← FramingCases.framingCases).map fun (u, n, r) => (⟨u, n, r⟩ : Case)
+  let _ ← IO.asTask (FramingCases.framingApp.run (port := FramingCases.framingPort) (config := FramingCases.framingConfig)) .dedicated
   let mwGolden := ((← MiddlewareCases.goldenCases) ++ (← MiddlewareCases.unitGoldenCases) ++
       MiddlewareCases.deviationCases).map
     fun (u, n, r) => (⟨u, n, r⟩ : Case)
@@ -1362,7 +1365,7 @@ def main : IO UInt32 := do
   let _ ← IO.asTask ((formApp "plain" {}).run (port := formPort)) .dedicated
   let _ ← IO.asTask ((formApp "plain" {}).run (port := stallPort) (config := { lingeringTimeout := 1000 })) .dedicated
   IO.sleep 1500
-  let cases := cases ++ golden ++ filesGolden ++ filesBehaviour ++ formGolden ++ tcGolden ++ formDataCases ++ socketCases ++ chunkedCases ++ tcSocketCases ++ slowUploadCases ++ mwGolden
+  let cases := cases ++ golden ++ filesGolden ++ filesBehaviour ++ formGolden ++ tcGolden ++ formDataCases ++ socketCases ++ chunkedCases ++ tcSocketCases ++ slowUploadCases ++ mwGolden ++ framing
   for c in cases do
     let ok ← try c.run catch e => do IO.println s!"      {e}"; pure false
     IO.println s!"{if ok then "ok  " else "FAIL"}  {c.name}  [{c.upstream}]"
