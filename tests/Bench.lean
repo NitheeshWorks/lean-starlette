@@ -115,6 +115,16 @@ def formParse : IO Unit := do
     let t1 ← IO.monoNanosNow
     IO.println s!"{label}: {match r with | .ok n => s!"ok {n}" | .error e => s!"error {repr e}"} in {(t1 - t0) / 1000} µs"
 
+/-- Decode a chunked body of `mb` MiB in 64 KiB chunks (or 1 KiB with
+`small`) with lean-httpx's verified codec. -/
+def chunkDecode (mb : Nat) (chunk : Nat) : IO Unit := do
+  let data := (List.range (mb * 1024 * 1024 / chunk)).map fun _ => ByteArray.mk (Array.replicate chunk 120)
+  let enc := LeanHttpx.H1.encodeChunked data
+  let t0 ← IO.monoMsNow
+  let r := LeanHttpx.H1.decodeChunked enc
+  let n := match r with | some (cs, _) => (LeanHttpx.H1.concatChunks cs).size | none => 0
+  IO.println s!"decodeChunked {enc.size} bytes in {chunk}-byte chunks: {n} in {(← IO.monoMsNow) - t0} ms"
+
 /-- Peak resident memory of this process, in KB (`VmHWM`). -/
 def peakKB : IO Nat := do
   let s ← IO.FS.readFile "/proc/self/status"
@@ -140,22 +150,56 @@ def repeatB (b : ByteArray) (n : Nat) : ByteArray := Id.run do
   for _ in [0:n] do out := out ++ b
   return out
 
+/-- The chunked pipeline's stages on `mb` MiB in 64 KiB chunks, timed apart. -/
+def chunkPipe (mb : Nat) : IO Unit := do
+  let data := (List.range (mb * 16)).map fun _ => xBytes 65536
+  let enc := LeanHttpx.H1.encodeChunked data
+  let pieces := (List.range ((enc.size + 65535) / 65536)).toArray.map fun i => enc.extract (i * 65536) ((i + 1) * 65536)
+  let t0 ← IO.monoMsNow
+  let mut st : ChunkScan := .sizeLine .empty
+  let mut got := 0
+  for p in pieces do
+    let (s', g') := st.feed p got (1 <<< 30)
+    st := s'; got := g'
+  let t1 ← IO.monoMsNow
+  let raw := joinChunks "H".toUTF8 pieces
+  let t2 ← IO.monoMsNow
+  let some (out, _) := decodeChunkedBody raw 1 (ByteArray.emptyWithCapacity (got + 1) ++ "H".toUTF8)
+    | IO.println "decode failed"
+  let t3 ← IO.monoMsNow
+  IO.println s!"{enc.size} bytes, {pieces.size} pieces: feed {t1 - t0} ms, join raw {t2 - t1} ms, decode into the output {t3 - t2} ms ({out.size} bytes; got {got}, done {match st with | .done _ => true | _ => false})"
+
+/-- `n` MiB of `x`, as pieces written one at a time. -/
+def xPieces (n : Nat) : List (Unit → ByteArray) := List.replicate n fun _ => xBytes mib
+
+/-- A multipart part's head (`--B`, its `Content-Disposition`, the blank line). -/
+def mpHeadB (name : String) (filename : Option String := none) : ByteArray :=
+  let p := mpPart name .empty filename
+  p.extract 0 (p.size - 2)
+
 /-- Hostile form bodies, end to end over TCP (an in-process server, curl
-uploading from a file): each is `(name, content type, body, expected status,
-time bound ms, peak bound MB)`. The peak is the server process's, and includes
-the body as the server holds it and the ~220 MB the bench itself holds (the
-bodies are built in process). Bounds leave CI runners about 2x headroom. -/
-def formCases : List (String × String × (Unit → ByteArray) × String × Nat × Nat) := [
+uploading from a file): each is `(name, content type, body pieces, expected
+status, time bound ms, peak bound MB)`. The body file is written a piece at
+a time, so the peak is the server's own (the bench process at rest is about
+20 MB). Cases named `chunked…` are sent with `Transfer-Encoding: chunked`
+(curl's 64 KiB chunks); their bounds are three times uvicorn 0.54 +
+Starlette 1.8.0 on the same request (20 MB: 0.09-0.10 s, peak 76 MB; 50 MB
+multipart file: 0.26-0.31 s, peak 127 MB), the others about twice Lean's
+measured cost with headroom for CI. -/
+def formCases : List (String × String × List (Unit → ByteArray) × String × Nat × Nat) := [
   ("url200k", "application/x-www-form-urlencoded",
-    fun _ => "a=1".toUTF8 ++ repeatB "&a=1".toUTF8 199999, "400", 200, 150),
+    [fun _ => "a=1".toUTF8 ++ repeatB "&a=1".toUTF8 199999], "400", 200, 150),
   ("urlValue20m", "application/x-www-form-urlencoded",
-    fun _ => "a=".toUTF8 ++ xBytes (20 * mib), "400", 800, 300),
+    (fun _ => "a=".toUTF8) :: xPieces 20, "400", 800, 300),
   ("mpValue20m", "multipart/form-data; boundary=B",
-    fun _ => mpPart "f" (xBytes (20 * mib)) ++ "--B--\r\n".toUTF8, "400", 800, 300),
+    (fun _ => mpHeadB "f") :: xPieces 20 ++ [fun _ => "\r\n--B--\r\n".toUTF8], "400", 800, 300),
   ("mpFields50k", "multipart/form-data; boundary=B",
-    fun _ => repeatB (mpPart "f" "v".toUTF8) 50000 ++ "--B--\r\n".toUTF8, "400", 300, 150),
+    [fun _ => repeatB (mpPart "f" "v".toUTF8) 50000 ++ "--B--\r\n".toUTF8], "400", 300, 150),
   ("mpFile50m", "multipart/form-data; boundary=B",
-    fun _ => mpPart "f" (xBytes (50 * mib)) (some "big.bin") ++ "--B--\r\n".toUTF8, "200", 2000, 700)]
+    (fun _ => mpHeadB "f" (some "big.bin")) :: xPieces 50 ++ [fun _ => "\r\n--B--\r\n".toUTF8], "200", 2000, 700),
+  ("chunked20m", "application/octet-stream", xPieces 20, "200", 300, 228),
+  ("chunkedMpFile50m", "multipart/form-data; boundary=B",
+    (fun _ => mpHeadB "f" (some "big.bin")) :: xPieces 50 ++ [fun _ => "\r\n--B--\r\n".toUTF8], "200", 780, 381)]
 
 def formSizeApp : Application := Starlette (routes := [Route "/" (fun (r : Request) => do
     let data ← r.form
@@ -176,17 +220,22 @@ def formMem (name0 : String) : IO UInt32 := do
     | IO.println s!"unknown case {name}"; return 2
   let dir ← IO.FS.createTempDir
   let path := dir / "body.bin"
-  let size ← do
-    let body := mk ()
-    IO.FS.writeBinFile path body
-    pure body.size
+  let size ← IO.FS.withFile path .write fun h => do
+    let mut n := 0
+    for piece in mk do
+      let b := piece ()
+      h.write b
+      n := n + b.size
+    return n
   let port : Nat := 18751
   let _ ← IO.asTask ((if null then nullApp else formSizeApp).run (port := port)) .dedicated
   IO.sleep 300
   let base ← peakKB
   let t0 ← IO.monoMsNow
-  let res ← IO.Process.output { cmd := "curl", args := #["-s", "-i", "-X", "POST", "-H", s!"content-type: {ct}", "-H", "Expect:",
-    "--data-binary", s!"@{path}", s!"http://127.0.0.1:{port}/"] }
+  let chunked := name.startsWith "chunked"
+  let te := if chunked then #["-H", "Transfer-Encoding: chunked"] else #[]
+  let res ← IO.Process.output { cmd := "curl", args := #["-s", "-i", "-X", "POST", "-H", s!"content-type: {ct}", "-H", "Expect:"] ++ te ++
+    #["--data-binary", s!"@{path}", s!"http://127.0.0.1:{port}/"] }
   let ms := (← IO.monoMsNow) - t0
   IO.FS.removeDirAll dir
   let out := res.stdout.toUTF8
@@ -227,6 +276,8 @@ def main (args : List String) : IO Unit := do
   if args.headD "" == "plainupload" then plainUpload ((args.getD 1 "20").toNat!)
   if args.headD "" == "formmem" then IO.Process.exit (← formMem (args.getD 1 "")).toUInt8
   if args.headD "" == "formparse" then formParse; return
+  if args.headD "" == "chunkpipe" then chunkPipe ((args.getD 1 "50").toNat!); return
+  if args.headD "" == "chunkdecode" then chunkDecode ((args.getD 1 "20").toNat!) ((args.getD 2 "65536").toNat!); return
   if args.headD "" == "file" then fileBench ((args.getD 1 "100").toNat!)
   if args.headD "" == "paths" then paths; return
   if args.headD "" == "digits" then digits; return

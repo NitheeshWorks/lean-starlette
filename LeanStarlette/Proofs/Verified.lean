@@ -6,6 +6,7 @@ import LeanStarlette.Proofs.Range
 import LeanStarlette.Proofs.Files
 import LeanStarlette.Proofs.Forms
 import LeanStarlette.Proofs.TestClient
+import LeanStarlette.Proofs.Chunked
 
 /-!
 # The harness: one `Verified<Layer>` structure per layer
@@ -82,11 +83,13 @@ theorem theVerifiedFiles : VerifiedFiles where
 /-- Forms (m4): `request.form()` over lean-multipart. -/
 structure VerifiedForms where
   formParseAgrees : Spec.FormParseAgrees
+  chunkedDecodeAgrees : Spec.ChunkedDecodeAgrees
   formLimitsEnforced : Spec.FormLimitsEnforced
   formError400 : Spec.FormError400
 
 theorem theVerifiedForms : VerifiedForms where
   formParseAgrees := fun _ _ _ _ h => form_parse_agrees h
+  chunkedDecodeAgrees := fun cs hv rest => by simpa using decodeChunkedBody_encode cs hv rest .empty
   formLimitsEnforced := fun _ _ _ _ h => form_limits_enforced h
   formError400 := form_error_400
 

@@ -1,6 +1,7 @@
 import Std.Http
 import LeanStarlette.APIs
 import LeanStarlette.RepoImpl.Head
+import LeanStarlette.RepoImpl.Chunked
 
 /-!
 # Transport: serving an application with `Std.Http`
@@ -52,10 +53,15 @@ def splitTarget (target : String) : String × String :=
 
 /-- The pure request for a `Std.Http` request head and its whole body. The
 target is the one the transport saved in `targetHeader` (every copy of that
-header is removed). -/
+header is removed). With `preread`, the body was read by the transport and
+the head's framing headers carry their private names (`hideFraming`). -/
 def requestOfHead (head : Std.Http.Request.Head) (body : ByteArray)
-    (client : Option (String × Nat) := none) (server : Option (String × Nat) := none) : Request :=
+    (client : Option (String × Nat) := none) (server : Option (String × Nat) := none)
+    (preread : Bool := false) : Request :=
   let fields := head.headers.toList.map fun (n, v) => (lowerAscii (toString n), toString v)
+  -- a body the transport read: its framing headers come back under their names
+  let fields := if preread then fields.map fun (n, v) =>
+      ((framingHeaders.find? (·.2 == n)).map (·.1) |>.getD n, v) else fields
   let target := ((fields.find? (·.1 == targetHeader)).map (·.2)).getD (toString head.uri)
   let (path, query_string) := splitTarget target
   { method := toString head.method
@@ -106,17 +112,48 @@ def toHttpResponse (r : Response) : Async (Std.Http.Response Body.Any) := do
   let resp := (Std.Http.Response.withStatus (statusOf r.status_code)).headers (httpHeaders r) |>.body body
   return (resp : Std.Http.Response Body.Any)
 
+/-- Read a request body into one buffer of `cap` bytes' capacity (the
+transport always knows the length: it hands `Std.Http` a `Content-Length`).
+`Body.Stream.readAll` grows its buffer from empty, holding up to twice the
+body while it copies. At most `limit` bytes, as `readAll`'s `maximumSize`;
+`fuel` bounds the number of chunks. -/
+def readBodyInto {m : Type → Type} [Monad m] [MonadExceptOf IO.Error m] [Body.Stream.NextChunk m]
+    (stream : Body.Stream) (cap : Nat) (limit : Option UInt64) (fuel : Nat) : m ByteArray := do
+  let mut out := ByteArray.emptyWithCapacity cap
+  for _ in [0:fuel] do
+    match ← Body.Stream.NextChunk.nextChunk stream with
+    | none => return out
+    | some chunk =>
+      out := out ++ chunk.data
+      if let some max := limit then
+        if out.size.toUInt64 > max then
+          throw (IO.userError s!"body exceeded maximum size of {max} bytes")
+  return out
+
+/-- The `Content-Length` of a head, if it has a plain one. -/
+def headContentLength (head : Std.Http.Request.Head) : Option Nat :=
+  (head.headers.toList.find? fun (n, _) => lowerAscii (toString n) == "content-length").bind
+    fun (_, v) => (toString v).trimAscii.toString.toNat?
+
 /-- The `Std.Http` handler for an application: read the body (up to the
 application's `max_body_size`, when it has one), call the app, send the
 response. `handled` records that the application ran, so the transport can
 tell its own error responses from the application's. -/
 def Application.toHandler (a : Application) (handled : IO.Ref Bool)
-    (client : Option (String × Nat) := none) : Std.Http.Server.StatelessHandler :=
+    (client : Option (String × Nat) := none) (preread : Option (IO.Ref (Option ByteArray)) := none) :
+    Std.Http.Server.StatelessHandler :=
   Std.Http.Server.Handler.ofFn fun req => do
     handled.set true
     let limit := a.max_body_size.map fun n => (n + 1).toUInt64
-    let body : ByteArray ← req.body.readAll (maximumSize := limit)
-    let response ← a.call (requestOfHead req.line body client)
+    let taken ← match preread with
+      | some r => r.swap none
+      | none => pure none
+    let (body, pre) ← match taken with
+      | some b => pure (b, true)
+      | none =>
+        let cap := min ((headContentLength req.line).getD 0) (a.max_body_size.getD (64 * 1024 * 1024) + 1)
+        pure (← readBodyInto req.body cap limit (cap + 1024 * 1024 * 1024), false)
+    let response ← a.call (requestOfHead req.line body client (preread := pre))
     toHttpResponse response
 
 /-! ## One connection -/
@@ -211,12 +248,75 @@ def readBody [Transport t] (c : t) (timeout : Std.Time.Millisecond.Offset) (acc 
   | some (some chunk) =>
     if hc : chunk.size = 0 then return .eof acc else
     have : need - (got + chunk.size) < need - got := by omega
-    readBody c timeout (acc.push chunk) (got + chunk.size) need
+    -- a read's buffer has the capacity asked for; keep only its bytes
+    readBody c timeout (acc.push (chunk.extract 0 chunk.size)) (got + chunk.size) need
 termination_by need - got
 
 /-- Join chunks into one buffer of the right capacity, copying each once. -/
 def joinChunks (first : ByteArray) (chunks : Array ByteArray) : ByteArray :=
   chunks.foldl (· ++ ·) (ByteArray.emptyWithCapacity (first.size + chunks.foldl (· + ·.size) 0) ++ first)
+
+/-- How reading a chunked body ended. -/
+inductive ChunkedRead where
+  /-- The raw pieces received (the last cut where the body ends) and the
+  decoded size. -/
+  | complete (pieces : Array ByteArray) (size : Nat)
+  | timeout
+  | eof
+  | bad (message : String)
+  | tooLarge
+
+/-- Read a chunked body piece by piece, `ChunkScan.feed` deciding where it
+ends; each read within `timeout`. The pieces are kept apart, as in
+`readBody`. `raw` bytes have been read of at most `cap`, which bounds the
+framing a sender can add (and the recursion); each step reads at least one
+byte. -/
+def readChunked [Transport t] (c : t) (timeout : Std.Time.Millisecond.Offset) (st : ChunkScan)
+    (acc : Array ByteArray) (got limit raw cap : Nat) : Async ChunkedRead := do
+  if hn : cap ≤ raw then return .tooLarge else
+  let deadline ← Std.Async.Selector.sleep timeout
+  let r ← Selectable.one #[
+    .case (Transport.recvSelector c 65536) (fun x => pure (some x)),
+    .case deadline (fun _ => pure none)]
+  match r with
+  | none => return .timeout
+  | some none => return .eof
+  | some (some piece) =>
+    if hc : piece.size = 0 then return .eof else
+    match st.feed piece got limit with
+    | (.done used, got') => return .complete (acc.push (piece.extract 0 used)) got'
+    | (.bad m, _) => return .bad m
+    | (.tooLarge, _) => return .tooLarge
+    | (st', got') =>
+      have : cap - (raw + piece.size) < cap - raw := by omega
+      readChunked c timeout st' (acc.push (piece.extract 0 piece.size)) got' limit (raw + piece.size) cap
+termination_by cap - raw
+
+/-- What the transport does with a request: hand `Std.Http` these bytes
+(with the body it read itself, if any, for the application), or answer with
+a status. -/
+inductive ChunkedOutcome where
+  | forward (bytes : ByteArray) (body : Option ByteArray := none)
+  | reject (status : Nat) (reason body : String)
+  /-- Close without a response (uvicorn, when a chunked body ends early). -/
+  | drop
+
+/-- The body after the head of a pre-read request: the bytes received after
+`e`, then the pieces, at most `len` of them. -/
+def prereadBody (bytes : ByteArray) (e : Nat) (pieces : Array ByteArray) (len : Nat) : ByteArray :=
+  let b := joinChunks (bytes.extract e bytes.size) pieces
+  if b.size ≤ len then b else b.extract 0 len
+
+/-- Decode the received bytes (`bytes` up to the body's start `e`, then the
+pieces) with the verified decoder into a buffer of `size`, the scanner's
+decoded size; the two must agree, or the request is refused. `Std.Http` gets
+the head alone. -/
+def chunkedRequest (bytes : ByteArray) (e : Nat) (pieces : Array ByteArray) (size : Nat) : ChunkedOutcome :=
+  match decodeChunkedBody (joinChunks bytes pieces) e (ByteArray.emptyWithCapacity size) with
+  | some (out, _) =>
+    if out.size == size then .forward (hideFraming bytes e) (some out)
+    else .reject 400 "Bad Request" "Invalid HTTP request received."
+  | none => .reject 400 "Bad Request" "Invalid HTTP request received."
 
 /-- The configuration the transport hands `Std.Http`: uvicorn-like limits
 (no header count limit beyond the head size; long header values), and no
@@ -251,27 +351,48 @@ def serveOne [Transport t] (a : Application) (conn : t) (config : Std.Http.Confi
       Transport.sendAll conn #[rawResponse code reason body]
       Transport.close conn; shutdown
     | .forward bytes =>
-      -- A body framed by a plain Content-Length is read here, whole, and handed
-      -- to Std.Http with the head in one piece: Std.Http's reader copies its
-      -- unconsumed input on every receive, which is quadratic in a body that
-      -- arrives in many reads (20 MB: 5.5 s; in one piece: linear).
-      let bytes ← match plainBodyLength bytes with
+      -- A body framed by a plain Content-Length is read here, whole: Std.Http's
+      -- reader copies its unconsumed input on every receive, which is quadratic
+      -- in a body that arrives in many reads (20 MB: 5.5 s; here: linear). A
+      -- chunked body is read the same way and its framing decoded once by the
+      -- verified decoder (`decodeChunkedBody_encode`). Std.Http then gets the
+      -- head alone, its framing headers renamed (`hideFraming`), and the
+      -- application the body, so Std.Http never copies it.
+      let limit := config.maxBodySize
+      let outcome ← match plainBodyLength bytes with
         | some (e, len) =>
-          if len ≤ config.maxBodySize then
+          if len ≤ limit then
             match ← readBody conn config.lingeringTimeout #[] bytes.size (e + len) with
-            | .complete cs => pure (some (joinChunks bytes cs))
-            | .eof cs => pure (some (joinChunks bytes cs))
-            | .timeout => pure none
-          else pure (some bytes)
-        | none => pure (some bytes)
-      match bytes with
-      | none =>
-        Transport.sendAll conn #[rawResponse 408 "Request Timeout" "Request Timeout"]
+            | .complete cs => pure (ChunkedOutcome.forward (hideFraming bytes e) (some (prereadBody bytes e cs len)))
+            | .eof cs => pure (.forward (hideFraming bytes e) (some (prereadBody bytes e cs len)))
+            | .timeout => pure (.reject 408 "Request Timeout" "Request Timeout")
+          else pure (.forward bytes)
+        | none =>
+          match chunkedBodyStart bytes with
+          | none => pure (.forward bytes)
+          | some e =>
+            let early := bytes.extract e bytes.size
+            match ChunkScan.feed (.sizeLine .empty) early 0 limit with
+            | (.done _, got) => pure (chunkedRequest bytes e #[] got)
+            | (.bad _, _) => pure (.reject 400 "Bad Request" "Invalid HTTP request received.")
+            | (.tooLarge, _) => pure (.reject 413 "Content Too Large" "Content Too Large")
+            | (st, got) =>
+              match ← readChunked conn config.lingeringTimeout st #[] got limit early.size (2 * limit + 1024 * 1024) with
+              | .complete pieces size => pure (chunkedRequest bytes e pieces size)
+              | .timeout => pure (.reject 408 "Request Timeout" "Request Timeout")
+              | .eof => pure .drop
+              | .bad _ => pure (.reject 400 "Bad Request" "Invalid HTTP request received.")
+              | .tooLarge => pure (.reject 413 "Content Too Large" "Content Too Large")
+      match outcome with
+      | .drop => Transport.close conn; shutdown
+      | .reject code reason body =>
+        Transport.sendAll conn #[rawResponse code reason body]
         Transport.close conn; shutdown
-      | some bytes =>
+      | .forward bytes body =>
         let handled ← IO.mkRef false
+        let preread ← IO.mkRef body
         let replay : Replay t := ⟨conn, ← IO.mkRef (some bytes), ← IO.mkRef false, handled⟩
-        Std.Http.Server.serveConnection replay (a.toHandler handled client) (transportConfig config) extensions |>.run
+        Std.Http.Server.serveConnection replay (a.toHandler handled client (some preread)) (transportConfig config) extensions |>.run
         shutdown
 
 /-! ## The server -/

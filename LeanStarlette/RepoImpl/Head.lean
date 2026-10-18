@@ -128,6 +128,28 @@ def plainBodyLength (head : ByteArray) : Option (Nat × Nat) := do
     else some (e, v.foldl (fun n b => n * 10 + (b - 48).toNat) 0)
   | _ => none
 
+/-- The private names the transport gives a pre-read request's framing
+headers, so that `Std.Http` sees no body; `requestOfHead` names them back. -/
+def framingHeaders : List (String × String) :=
+  [("content-length", "x-lean-starlette-content-length"),
+   ("transfer-encoding", "x-lean-starlette-transfer-encoding")]
+
+/-- The head (up to `e`) of a request whose body the transport has read:
+`Content-Length` and `Transfer-Encoding` renamed to their private names, in
+place, and any header already carrying a private name dropped. Nothing past
+the head. -/
+def hideFraming (head : ByteArray) (e : Nat) : ByteArray :=
+  let bytes := (head.extract 0 e).toList
+  let requestLine := bytes.takeWhile (· != 10)
+  let privates := framingHeaders.map (·.2.toUTF8.toList)
+  let rename (l : List UInt8) : List UInt8 :=
+    let name := (splitHeaderLine l).1
+    match framingHeaders.find? (·.1.toUTF8.toList == name) with
+    | some (_, p) => p.toUTF8.toList ++ l.drop (l.takeWhile (· != 58)).length
+    | none => l
+  let lines := ((headerLines head e).filter fun l => !privates.contains (splitHeaderLine l).1).map rename
+  ⟨(requestLine ++ [10] ++ (lines.map (· ++ [13, 10])).flatten ++ [13, 10]).toArray⟩
+
 /-- The bytes of a response the transport writes itself. -/
 def rawResponse (status : Nat) (reason body : String) : ByteArray :=
   (s!"HTTP/1.1 {status} {reason}\r\ncontent-type: text/plain; charset=utf-8\r\nconnection: close\r\n" ++

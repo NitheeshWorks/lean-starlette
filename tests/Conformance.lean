@@ -570,7 +570,16 @@ def echoParts (r : Request) : Response :=
   JSONResponse (json% {"n_query": (r.queryParams.multiItems.length), "n_headers": (r.headers.raw.length),
     "q": (String.ofList ((toString r.queryParams).toList.take 20))})
 
-def socketApp : Application := Starlette (routes := [Route "/{p:path}" echoParts (methods := ["GET", "POST"])])
+/-- The body as the application sees it, with its framing headers (the
+probe app of the chunked cases, run the same way on uvicorn). -/
+def echoBody (r : Request) : Response :=
+  let opt (o : Option String) : Json := match o with | some v => .str v | none => .null
+  JSONResponse (Json.obj #[("n", .num (.int r.bodyBytes.size)),
+    ("body", .str (latin1Decode (r.bodyBytes.extract 0 40))),
+    ("te", opt (r.headers.get? "transfer-encoding")), ("cl", opt (r.headers.get? "content-length"))])
+
+def socketApp : Application := Starlette (routes := [Route "/body" echoBody (methods := ["POST"]),
+  Route "/{p:path}" echoParts (methods := ["GET", "POST"])])
 
 def socketPort : Nat := 18731
 
@@ -643,6 +652,7 @@ def socketCases : List Case := [
     let out ← sendRaw socketPort ("GET /a HTTP/1.1\r\nConnection: close\r\n\r\n".toUTF8)
     ok (statusIs out "400" && out.endsWith "Invalid HTTP request received.")⟩
 ]
+
 
 /-! ## Golden responses recorded from Starlette 1.8.0 (`tests/golden/`) -/
 
@@ -826,8 +836,8 @@ open Std.Async Std.Async.TCP in
 the response until the server closes; with `hold`, keep the connection open
 after the last piece (a stalled client). Returns the response and the time
 from connecting to the close. -/
-def sendSlow (port : Nat) (pieces : List ByteArray) (pauseMs : UInt32) (hold : Bool := false) :
-    IO (String × Nat) := do
+def sendSlow (port : Nat) (pieces : List ByteArray) (pauseMs : UInt32) (hold : Bool := false)
+    (endWrite : Bool := false) : IO (String × Nat) := do
   let t0 ← IO.monoMsNow
   let res ← Async.block do
     let c ← (Socket.Client.mk : IO Socket.Client)
@@ -837,6 +847,7 @@ def sendSlow (port : Nat) (pieces : List ByteArray) (pauseMs : UInt32) (hold : B
         try c.sendAll #[p] catch _ => pure ()
         (IO.sleep pauseMs : IO Unit)
       if hold then (IO.sleep 20000 : IO Unit)
+      if endWrite then try c.shutdown catch _ => pure ()
     let rec loop (acc : ByteArray) : Nat → Async ByteArray
       | 0 => pure acc
       | n + 1 => do
@@ -845,6 +856,48 @@ def sendSlow (port : Nat) (pieces : List ByteArray) (pauseMs : UInt32) (hold : B
         | none => pure acc
     loop .empty 100000
   return ((String.fromUTF8? res).getD "", (← IO.monoMsNow) - t0)
+
+def chunkedHead : String := "POST /body HTTP/1.1\r\nHost: x\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n"
+
+/-- Chunked request bodies, each beside uvicorn 0.54 (h11) + Starlette 1.8.0
+on the same bytes (the same probe app); httptools differs only on 21 hex
+digits (200). -/
+def chunkedCases : List Case :=
+  let body (out : String) : String := (out.splitOn "\r\n\r\n").getLastD ""
+  let ok200 (raw : String) (want : String) : IO Bool := do
+    let out ← sendRaw socketPort (chunkedHead ++ raw).toUTF8
+    ok (statusIs out "200" && body out == want)
+  let bad (raw : String) : IO Bool := do
+    let out ← sendRaw socketPort (chunkedHead ++ raw).toUTF8
+    ok (statusIs out "400" && out.endsWith "Invalid HTTP request received.")
+  let e (n : Nat) : String := String.ofList (List.replicate n 'e')
+  [⟨"uvicorn(h11)+starlette: a chunked body with extensions and trailers [socket]", "chunked: extensions and trailers",
+      ok200 "5;a=b\r\nhello\r\n6\r\n world\r\n0\r\nX-T: 1\r\n\r\n"
+        "{\"n\":11,\"body\":\"hello world\",\"te\":\"chunked\",\"cl\":null}"⟩,
+   ⟨"uvicorn(h11)+starlette: upper-case hex [socket]", "chunked: upper-case hex",
+      ok200 "A\r\n0123456789\r\n0\r\n\r\n" "{\"n\":10,\"body\":\"0123456789\",\"te\":\"chunked\",\"cl\":null}"⟩,
+   ⟨"uvicorn(h11)+starlette: a 20-digit chunk size [socket]", "chunked: 20 hex digits",
+      ok200 (String.ofList (List.replicate 19 '0') ++ "5\r\nhello\r\n0\r\n\r\n")
+        "{\"n\":5,\"body\":\"hello\",\"te\":\"chunked\",\"cl\":null}"⟩,
+   ⟨"uvicorn(h11)+starlette: a 21-digit chunk size is 400 (httptools: 200) [socket]", "chunked: 21 hex digits",
+      bad (String.ofList (List.replicate 20 '0') ++ "5\r\nhello\r\n0\r\n\r\n")⟩,
+   ⟨"uvicorn(h11)+starlette: a size that is not hex is 400 [socket]", "chunked: bad hex",
+      bad "zz\r\nhello\r\n0\r\n\r\n"⟩,
+   ⟨"uvicorn(h11)+starlette: data not followed by CRLF is 400 [socket]", "chunked: no CRLF after data",
+      bad "5\r\nhelloXX0\r\n\r\n"⟩,
+   ⟨"uvicorn(h11)+starlette: a 17 KB extension in one receive is 200 [socket]", "chunked: 17 KB extension",
+      ok200 ("5;" ++ e 17000 ++ "\r\nhello\r\n0\r\n\r\n") "{\"n\":5,\"body\":\"hello\",\"te\":\"chunked\",\"cl\":null}"⟩,
+   ⟨"uvicorn(h11)+starlette: 17 KB of trailers in one receive is 200 [socket]", "chunked: 17 KB trailers",
+      ok200 ("5\r\nhello\r\n0\r\nX-T: " ++ e 17000 ++ "\r\n\r\n") "{\"n\":5,\"body\":\"hello\",\"te\":\"chunked\",\"cl\":null}"⟩,
+   ⟨"h11 (Receive buffer too long): a chunk-size line still incomplete past 16 KiB is 400 [socket]", "chunked: endless size line", do
+      let (out, _) ← sendSlow socketPort [(chunkedHead ++ "5;").toUTF8, (e 20000).toUTF8] 100 (hold := true)
+      ok (statusIs out "400")⟩,
+   ⟨"transport.limits (uvicorn: no limit): a chunk over max_body_size is 413 [socket]", "chunked: over max_body_size",
+      do let out ← sendRaw socketPort (chunkedHead ++ "5000000\r\nx").toUTF8
+         ok (statusIs out "413")⟩,
+   ⟨"uvicorn+starlette: a chunked body that ends early closes the connection [socket]", "chunked: eof before the last chunk", do
+      let (out, ms) ← sendSlow socketPort [(chunkedHead ++ "5\r\nhello\r\n").toUTF8] 50 (endWrite := true)
+      ok (out.isEmpty && ms < 5000)⟩]
 
 def formPort : Nat := 18732
 def stallPort : Nat := 18733
@@ -1246,7 +1299,7 @@ def main : IO UInt32 := do
   let _ ← IO.asTask ((formApp "plain" {}).run (port := formPort)) .dedicated
   let _ ← IO.asTask ((formApp "plain" {}).run (port := stallPort) (config := { lingeringTimeout := 1000 })) .dedicated
   IO.sleep 1500
-  let cases := cases ++ golden ++ filesGolden ++ filesBehaviour ++ formGolden ++ tcGolden ++ formDataCases ++ socketCases ++ slowUploadCases
+  let cases := cases ++ golden ++ filesGolden ++ filesBehaviour ++ formGolden ++ tcGolden ++ formDataCases ++ socketCases ++ chunkedCases ++ slowUploadCases
   for c in cases do
     let ok ← try c.run catch e => do IO.println s!"      {e}"; pure false
     IO.println s!"{if ok then "ok  " else "FAIL"}  {c.name}  [{c.upstream}]"

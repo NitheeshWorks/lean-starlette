@@ -414,10 +414,27 @@ test = ["tests/Conformance.lean::formDataCases", "tests/Props.lean::properties"]
 [[requirement]]
 id = "transport.body-preread"
 upstream = "uvicorn: request bodies streamed to the app"
-title = "A Content-Length body is read by the transport before Std.Http parses it (linear; Std.Http alone is quadratic in the body), within maxBodySize; 50 MB in under 1 s"
+title = "A Content-Length body is read by the transport (linear; Std.Http alone is quadratic in the body), within maxBodySize, and handed to the application directly: Std.Http gets the head alone, its framing headers renamed and restored in place (hideFraming); 50 MB in under 0.5 s"
 status = "tested"
-realises = ["LeanStarlette.readBody", "LeanStarlette.joinChunks", "LeanStarlette.plainBodyLength"]
+realises = ["LeanStarlette.readBody", "LeanStarlette.joinChunks", "LeanStarlette.plainBodyLength", "LeanStarlette.hideFraming", "LeanStarlette.prereadBody", "LeanStarlette.readBodyInto"]
 test = ["tests/Bench.lean", "tests/Conformance.lean::slowUploadCases"]
+
+[[requirement]]
+id = "transport.chunked"
+upstream = "uvicorn (h11): Transfer-Encoding: chunked request bodies"
+title = "A chunked body is read by the transport piece by piece (ChunkScan.feed: h11's 20-hex-digit size and 16 KiB incomplete-event limits, max_body_size on the decoded size), then decoded once by lean-httpx's chunk parsers with slices (decodeChunkedBody), proved to return exactly the chunks of any chunk-encoded body; the app sees Transfer-Encoding: chunked and no Content-Length, as upstream; trailers dropped. 20 MB 0.2 s, 50 MB multipart file 0.5 s"
+status = "implemented"
+realises = ["LeanStarlette.ChunkScan.feed", "LeanStarlette.decodeChunkedBody", "LeanStarlette.decodeChunksInto", "LeanStarlette.chunkedBodyStart", "LeanStarlette.readChunked", "LeanStarlette.chunkedRequest"]
+theorem = ["LeanStarlette.decodeChunkedBody_encode", "LeanStarlette.decodeChunkedBody_agrees", "LeanStarlette.decodeChunksInto_encode"]
+test = ["tests/Conformance.lean::chunkedCases", "tests/Props.lean::properties", "tests/Bench.lean"]
+
+[[requirement]]
+id = "transport.chunked-limits"
+upstream = "uvicorn 0.54: h11 and httptools on hostile chunked bodies"
+title = "A chunk size of 21+ hex digits is 400 as h11 (httptools: 200); a chunked body over max_body_size is 413 at the size line (uvicorn: no limit); framing over 2 x max_body_size + 1 MiB is 413; EOF before the last chunk closes without a response, as uvicorn"
+status = "deviation"
+realises = ["LeanStarlette.chunkLineSize", "LeanStarlette.maxChunkEvent"]
+test = ["tests/Conformance.lean::chunkedCases"]
 
 [[requirement]]
 id = "transport.body-stall"

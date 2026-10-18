@@ -100,6 +100,26 @@ def formTexts (items : List (String × FormItem)) : List (String × String) :=
 
 def urlCt : Option String := some "application/x-www-form-urlencoded"
 
+/-- A random chunked body: chunks with optional extensions, optional
+trailers; the encoding and the data. -/
+def randChunked (r : Rng) : (ByteArray × ByteArray) × Rng := Id.run do
+  let (n, r0) := r.nat 5
+  let mut r := r0
+  let mut enc : ByteArray := .empty
+  let mut data : ByteArray := .empty
+  for _ in [0:n] do
+    let (len, r1) := r.nat 300
+    let (ext, r2) := r1.nat 3
+    r := r2
+    let d := ByteArray.mk ((List.range (len + 1)).map fun i => UInt8.ofNat (i * 7 % 256)).toArray
+    let e := match ext with | 0 => "" | 1 => ";a=b" | _ => " ;q"
+    enc := enc ++ (String.ofList (Nat.toDigits 16 d.size) ++ e ++ "\r\n").toUTF8 ++ d ++ "\r\n".toUTF8
+    data := data ++ d
+  let (tr, r3) := r.nat 2
+  r := r3
+  enc := enc ++ (if tr == 0 then "0\r\n\r\n" else "0\r\nX-A: 1\r\nX-B: two\r\n\r\n").toUTF8
+  return ((enc, data), r)
+
 def properties : List Property := [
   ⟨"unquote (quote s) = s", fun r =>
     let (s, r) := r.string
@@ -179,7 +199,22 @@ def properties : List Property := [
     -- httpx's QueryParams groups a repeated key's values at its first position.
     let keys := fs.foldl (fun ks (k, _) => if ks.contains k then ks else ks ++ [k]) []
     let want := keys.flatMap fun k => fs.filter (·.1 == k)
-    (check "tc-params" (got == some want) (fun _ => s!"{fs} got {got}"), r)⟩
+    (check "tc-params" (got == some want) (fun _ => s!"{fs} got {got}"), r)⟩,
+  ⟨"chunked: the decoder agrees with lean-httpx's codec, and the scanner finds the end, on any split", fun r =>
+    let ((enc, data), r) := randChunked r
+    let (cut, r) := r.nat (enc.size + 1)
+    let tail := "GET".toUTF8
+    let b := enc ++ tail
+    let viaCodec := (LeanHttpx.H1.decodeChunked b).map fun (cs, rest) => (LeanHttpx.H1.concatChunks cs, b.size - rest.size)
+    let fast := decodeChunkedBody b 0
+    let (s1, g1) := ChunkScan.feed (.sizeLine .empty) (b.extract 0 cut) 0 (1 <<< 30)
+    let (s2, g2) := ChunkScan.feed s1 (b.extract cut b.size) g1 (1 <<< 30)
+    let ended := match s1, s2 with
+      | .done u, _ => u == enc.size
+      | _, .done u => cut + u == enc.size
+      | _, _ => false
+    (check "chunked" (fast == viaCodec && fast.map (·.1) == some data && ended && (g2 == data.size || (match s1 with | .done _ => g1 == data.size | _ => false)))
+      (fun _ => s!"{enc.size} bytes, cut {cut}"), r)⟩
 ]
 
 

@@ -212,13 +212,31 @@ literal cost O(n²) (75 s at 65000 characters).
 ### Large uploads
 
 `Std.Http`'s reader copies the unconsumed input on every receive, so a body
-it reads itself costs O(n²) (20 MB 5.5 s, 40 MB 18 s). The transport reads a
-`Content-Length` body itself first (`readBody`: reads of up to 64 KiB, kept
-apart and joined once), then hands `Std.Http` the whole request. Measured by
-`scripts/bench.sh` (CI runs it; each case has a time and a peak-memory
-bound, the peak including ~220 MB the bench holds): 50 MB upload 0.4 to 0.7 s;
-200k urlencoded fields rejected in 26 ms; 50k multipart fields in 47 ms; a
-20 MiB value over `max_part_size` in 0.2 to 0.3 s.
+it reads itself costs O(n²) (20 MB 5.5 s, 40 MB 18 s). The transport reads
+the body itself and hands it to the application directly; `Std.Http` gets
+the head alone, with `Content-Length` and `Transfer-Encoding` renamed to
+private names (`hideFraming`), which `requestOfHead` names back in place, so
+the application sees the headers the client sent.
+
+* A `Content-Length` body: `readBody`, reads of up to 64 KiB, each compacted
+  to its size (a read's buffer has the capacity asked for) and joined once.
+* A chunked body: `readChunked` keeps the pieces apart while
+  `ChunkScan.feed` finds the end (h11's limits: at most 20 hex digits; a
+  size line or trailer block still incomplete past 16 KiB after a receive is
+  a 400; `max_body_size` on the decoded size is a 413). The bytes are then
+  decoded once by `decodeChunkedBody` (lean-httpx's `chunkSizeLine` and
+  `lastChunk` with slices for the data, into one buffer of the decoded
+  size); `decodeChunkedBody_encode` proves it returns exactly the chunks of
+  any chunk-encoded body, and a property test compares it with lean-httpx's
+  codec on bodies with extensions and trailers.
+
+`scripts/bench.sh` (CI) bounds each hostile upload in time and peak memory
+(the bench process at rest is about 70 MB): the chunked cases at three times
+uvicorn 0.54 + Starlette 1.8.0 on the same request (20 MB: 0.17-0.2 s and
+150-180 MB against 0.09 s and 76 MB; a 50 MB multipart file: 0.45-0.5 s and
+355 MB against 0.26-0.31 s and 127 MB); a 50 MB Content-Length upload
+0.4-0.5 s; 200k urlencoded fields rejected in 26 ms; 50k multipart fields in
+47 ms; a 20 MiB value over `max_part_size` in 0.2 s.
 
 ### Large JSON bodies
 

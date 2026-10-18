@@ -1,6 +1,7 @@
 import LeanStarlette.APIs.Starlette
 import LeanStarlette.APIs.Forms
 import LeanStarlette.APIs.TestClient
+import LeanStarlette.Proofs.Chunked
 
 /-!
 # Specifications: what the router and the responses promise
@@ -175,5 +176,14 @@ def TestClientResponse : Prop :=
     let r := testResponse method status headers body
     r.statusCode = status ∧ r.headers.raw = headers.raw ∧
       r.stream = some (if method == "HEAD" then .empty else body)
+
+/-- The transport's chunked-body decoder agrees with the chunked coding: on
+the chunk encoding of non-empty chunks (under h11's 20-hex-digit bound)
+followed by anything, it returns exactly those chunks' data and the end of
+the encoding. -/
+def ChunkedDecodeAgrees : Prop :=
+  ∀ (cs : List ByteArray), (∀ c ∈ cs, 0 < c.size ∧ c.size < LeanHttpx.H1.maxChunkSize) → ∀ rest : ByteArray,
+    decodeChunkedBody (LeanHttpx.H1.encodeChunked cs ++ rest) 0 =
+      some (LeanHttpx.H1.concatChunks cs, (LeanHttpx.H1.encodeChunked cs).size)
 
 end LeanStarlette.Spec
