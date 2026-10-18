@@ -1,5 +1,5 @@
 import LeanStarlette.APIs
-import LeanStarlette.Proofs.Verified
+import LeanStarlette.Proofs
 
 /-!
 # LeanStarlette
