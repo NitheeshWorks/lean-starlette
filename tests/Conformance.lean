@@ -1354,7 +1354,8 @@ def main : IO UInt32 := do
   let filesBehaviour := filesBehaviourCases (← makeFixture)
   let formGolden ← formGoldenCases
   let tcGolden ← tcGoldenCases
-  let mwGolden := ((← MiddlewareCases.goldenCases) ++ (← MiddlewareCases.unitGoldenCases)).map
+  let mwGolden := ((← MiddlewareCases.goldenCases) ++ (← MiddlewareCases.unitGoldenCases) ++
+      MiddlewareCases.deviationCases).map
     fun (u, n, r) => (⟨u, n, r⟩ : Case)
   let _ ← IO.asTask (socketApp.run (port := socketPort)) .dedicated
   let _ ← IO.asTask (tcApp.run (port := tcPort)) .dedicated

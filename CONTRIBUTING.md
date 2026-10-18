@@ -64,6 +64,50 @@ and `redirect_slashes` decisions, and the headline theorems are proved from
 all partial matches (`allowOf`), not Keel's first-partial policy, because
 of UP-027.
 
+### Middleware (m5)
+
+A middleware is `App → App` (`Middleware`), and the application applies its
+list first-outermost (`middlewareStack`, `middleware_stack_order`). Each
+upstream middleware is a function with upstream's keyword arguments and
+defaults, so `Middleware CORSMiddleware (allow_origins := ["*"])` is
+`Middleware(CORSMiddleware, allow_origins=["*"])` (the `Middleware` macro in
+`APIs/Middleware.lean` is application). What each decides is a pure
+function, and the theorems are about those functions:
+
+* `TrustedHostMiddleware`: `trustedHostDecision` (`trusted_host_reject`,
+  `trusted_host_reject_400`); its patterns are checked when the app is
+  built (`ValidHostPattern`, by `decide +kernel`).
+* `HTTPSRedirectMiddleware`: `httpsRedirectURL` (`https_redirect`).
+* `CORSMiddleware`: `CORSConfig.preflight` and `responseHeaders`
+  (`cors_preflight`, `cors_allowed_origin`). `allow_origin_regex` is a
+  `PyRe.Pattern`: `RepoImpl/PyRe.lean` is only Python's `re` dialect (atoms
+  with CPython 3.13's `\d`, `\w`, `\s` tables, and a parser after
+  `re._parser`), compiled onto `Keel.Regex` in `Mode.full`, which is
+  `re.fullmatch`; matching and its laws are Keel's. `re!"..."` parses a
+  literal at elaboration and embeds the result (`ToExpr`), so nothing is
+  reduced by the kernel; `PyRe.Pattern.compile` does it at run time.
+* Cookies (`RepoImpl/Cookies.lean`): `cookieParser` is `cookie_parser`,
+  linear (an array and a hash index), proved equal to the list-`dict`
+  specification `cookieParserSpec` (`cookieParser_eq_spec`);
+  `cookie_parse_print` (legal distinct names read back from the header a
+  browser sends) and `set_cookie_receive` / `delete_cookie_receive` (what a
+  browser jar holds after the line) are stated on the specification side.
+* `SessionMiddleware` signs with lean-itsdangerous's `TimestampSigner`
+  (`session_sign_verify` from `TimestampSigner.unsign_sign` and lean-httpx's
+  `decodeList_encodeList`); the cookie is byte-identical to upstream's.
+* `GZipMiddleware`: `gzip_minimum_size`; the compressor is
+  `RepoImpl/Deflate.lean` (LZ77 with hash chains, zlib's lazy evaluation
+  and `TOO_FAR`, per-block choice of dynamic Huffman, fixed or stored,
+  slicing-by-8 CRC-32), tested, not proved.
+* `AuthenticationMiddleware`, `requires`, `BaseHTTPMiddleware`: tested.
+
+**Elaboration cost.** A plain `by decide` on `PyRe.parse` of a CORS regex
+is killed at 4 GB; every compile-time check here is `decide +kernel` or
+needs no reduction (`re!`). `tests/MiddlewareUsage.lean` (every middleware,
+a realistic regex and a six-host list) elaborates under
+`stack-tools/capped` 4G in 2.0 s at 1.74 GB peak, of which the import is
+1.70 GB.
+
 ### Tested, not proved
 
 Listed here with the reason, and in `docs/traceability.toml` with
@@ -76,8 +120,24 @@ Listed here with the reason, and in `docs/traceability.toml` with
   Python's `urllib.parse` in the conformance suite.
 * **`QueryParams`** parse/print round trip: depends on the above.
 * **`URL`** split and rebuild, and the `Host` header parser: string
-  plumbing compared against upstream cases. IP literals in `Host` are checked
-  for their character set, not as IPv6 addresses.
+  plumbing compared against upstream cases. The parser is `_HOST_RE`
+  exactly; a bracketed literal is validated as `ipaddress.IPv6Address`
+  (`isIPv6Address`, `isIPv4Address` for the embedded form), checked by a
+  property and the IPv6 golden scenarios.
+* **Middleware** beyond the eight theorems: CORS response headers for
+  every option, GZip's pass-through rules, exclusions and streams,
+  sessions' cookie flags and `Vary`, authentication and `requires`,
+  `BaseHTTPMiddleware`: golden replay of 66 scenarios from
+  `tests/middleware/` and `tests/test_authentication.py`
+  (`tests/golden/middleware-starlette-1.8.0.jsonl`) and 134 unit goldens
+  (`tests/golden/m5-units-starlette-1.8.0.jsonl`: the regex dialect against
+  Python's `re.fullmatch`, `cookie_parser`, `_quote`, `set_cookie` lines,
+  signed session cookies).
+* **The DEFLATE compressor**: properties (lean-httpx's `gunzip` reads back
+  `gzip` of any bytes, and sync-flushed pieces concatenate), and
+  `bench gziptest`, whose outputs Python's `zlib` decompresses. Its sizes
+  against zlib level 9: 10 MB of text 1.02 MB (zlib 0.82 MB), 20 MB of
+  zeros 23.6 KB (19.5 KB), random bytes stored.
 * **The transport** (`Transport.lean`): `Std.Http` is trusted, not
   re-verified (stack plan). Tested through `Std.Http`'s in-memory
   connection (`[std.http]` conformance cases) and over TCP (`[socket]`
@@ -127,6 +187,27 @@ Listed here with the reason, and in `docs/traceability.toml` with
 
 Each has a `status = "deviation"` row in `docs/traceability.toml`.
 
+* **`allow_origin_regex`**: backreferences, lookaround, conditionals,
+  atomic groups, possessive quantifiers, inline flags and `\N{...}` are an
+  `Unsupported` error at construction; `$` is `\Z` (differs from Python only
+  for a pattern that matches past a final newline, `a$\n`); repeat counts
+  at most 1000, expanded patterns at most 100 000 nodes.
+* **`set_cookie`**: `samesite` is an enumeration; `expires` is a date or
+  text (upstream's integer, seconds from now, needs the clock);
+  `delete_cookie` expires at the Unix epoch where upstream prints the
+  current time; `partitioned` prints `Partitioned` (Python 3.14's output;
+  3.13 raises); a value character above U+00FF is sent as is, where upstream
+  raises `UnicodeEncodeError`, a 500 (UP-064).
+* **Session cookies** are read as Latin-1 bytes where upstream encodes
+  UTF-8; a signed value is ASCII, so any other character fails the
+  signature either way.
+* **GZip**: the compressed bytes are Lean's, not zlib's, and
+  `compresslevel` is accepted and unused; a status that forbids content
+  (1xx, 204, 304) is passed through, where upstream with `minimum_size=0`
+  gzips the empty body and declares `Content-Length: 20` (UP-063).
+* **`requires(scopes, endpoint, ...)`** wraps an endpoint function, so there
+  is no signature to inspect for `request`; WebSocket endpoints are not in
+  this port.
 * **`Allow` on 405** is the union of every partially matching route's
   methods, deduplicated in route order. Upstream uses the first partial
   route's method set, in hash-seed order (UP-027).
@@ -242,6 +323,29 @@ uvicorn 0.54 + Starlette 1.8.0 on the same request (20 MB: 0.17-0.2 s and
 355 MB against 0.26-0.31 s and 127 MB); a 50 MB Content-Length upload
 0.4-0.5 s; 200k urlencoded fields rejected in 26 ms; 50k multipart fields in
 47 ms; a 20 MiB value over `max_part_size` in 0.2 s.
+
+### Hostile inputs to middleware
+
+`bench m5bench` (in `scripts/bench.sh`) runs each case as the best of 5
+after a first run and fails above twice Starlette 1.8.0's warm best of 5 on
+the same input (`tests/golden/record_m5_bench.py` →
+`tests/golden/m5-bench-starlette-1.8.0.json`). Measured at db28314:
+
+| Case | Lean | Starlette 1.8.0 |
+|---|---|---|
+| `cookie_parser`, 1 MB, 70 000 names | 58 ms | 41 ms |
+| `cookie_parser`, 100 000 repeats of one name | 31 ms | 30 ms |
+| `cookie_parser`, 50 000 quoted values with escapes | 63 ms | 77 ms |
+| 1000 preflights, origin not among 10 000 | 108 ms | 143 ms |
+| 1000 GETs from the last of 10 000 origins | 94 ms | 598 ms |
+| GZip over TCP, 10 MB of text | 1.05 s | 1.97 s |
+| GZip over TCP, 20 MB of zeros (a 1000:1 body) | 163 ms | 93 ms |
+| GZip over TCP, 2 MB of random bytes | 81 ms | 70 ms |
+
+Upstream's GZip is uvicorn 0.54 with h11; a `Cookie` header over 16 KiB is
+a `431` there, so the cookie cases are timed at the function. The
+compressor searches less often inside long runs of literals (after 256 in a
+row, one position in up to eight), so incompressible bodies cost little.
 
 ### Large JSON bodies
 

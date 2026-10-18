@@ -66,6 +66,27 @@ Endpoints may be `Request → IO Response`, `Request → AppM Response`
 (`AppM` adds `throw (HTTPException ...)`), or a pure `Request → Response`.
 Status codes are checked at compile time (`by decide` on the literal).
 
+Middleware is configured as in Starlette:
+
+```lean
+def app := Starlette (routes := routes) (middleware := [
+  Middleware TrustedHostMiddleware (allowed_hosts := ["example.com", "*.example.com"]),
+  Middleware CORSMiddleware (allow_origins := ["https://example.com"])
+    (allow_origin_regex := re!"https://.*\\.example\\.org"),   -- Python re, fullmatch
+  Middleware SessionMiddleware (secret_key := "..."),
+  Middleware GZipMiddleware (minimum_size := 1000)])
+
+def counter (request : Request) : AppM Response := do
+  let n := ((← request.sessionGet "n").bind Json.getInt?).getD 0
+  request.sessionSet "n" (json% (n + 1))
+  let theme := request.cookies.lookup "theme"
+  return (PlainTextResponse s!"{n} {theme}").set_cookie "seen" "1" (httponly := true)
+```
+
+`AuthenticationMiddleware (backend := ...)` gives `request.user` and
+`request.auth`; `requires ["authenticated"] endpoint (redirect := some "login")`
+guards an endpoint.
+
 ## What is proved
 
 The routing laws are `Keel.Route`'s general theorems (lean-keel),
@@ -87,6 +108,14 @@ instantiated for Starlette's `Route`, `Mount` and `Router`:
 | A static file is 304 exactly when `If-None-Match` lists its ETag (or `*`), else when `If-Modified-Since` is no earlier than `Last-Modified` | `etag_304_iff`, `date_304_iff`, `static_304_iff` |
 | A served static path is the directory followed by plain entry names (no `..`, `.`, `/`, NUL; on Windows no `\`) | `served_path_inside` |
 | `request.form()` is lean-multipart's Starlette parse, decoded; an accepted form meets `max_files`, `max_fields` and `max_part_size`; a rejected one is a 400 with Starlette's message | `form_parse_agrees`, `form_limits_enforced`, `form_error_400` |
+| Middleware wraps in list order, the first outermost | `middleware_stack_order` |
+| `TrustedHostMiddleware` answers 400 before the app for a host outside `allowed_hosts` | `trusted_host_reject`, `trusted_host_reject_400` |
+| `HTTPSRedirectMiddleware` answers 307 to the https URL, dropping :80/:443 | `https_redirect` |
+| A CORS preflight is 200 exactly when origin, method and headers are allowed; an allowed origin is echoed | `cors_preflight`, `cors_allowed_origin` |
+| `request.cookies` reads back the `Cookie` header a browser sends for legal, distinct names; the linear parser is the specification | `cookie_parse_print`, `cookieParser_eq_spec` |
+| After `set_cookie` the browser holds the value; after `delete_cookie`, nothing | `set_cookie_receive`, `delete_cookie_receive` |
+| A session cookie signed by `SessionMiddleware` reads back the same session within `max_age` | `session_sign_verify` |
+| GZip leaves a body under `minimum_size` untouched | `gzip_minimum_size` |
 | The test client's transport hands the app every request header (lower-cased) and a `host`, and the client gets the app's status, headers and body (none for `HEAD`) | `scope_headers_complete`, `scope_has_host`, `test_response_body` |
 
 Every one has a slot in `LeanStarlette/Proofs/Verified.lean`. What is
@@ -127,8 +156,13 @@ does). Milestone 4: `request.form()` with `max_files`, `max_fields`,
 `max_part_size`, `FormData` and `UploadFile`, over lean-multipart.
 Milestone 8: `TestClient` as lean-httpx's `Client` over the application
 (`let client ← TestClient app; let r ← client.get "/"`).
-Middleware, cookies, WebSockets (and the WebSocket test session), `Host`
-and lifespan follow in later milestones.
+Milestone 5: `BaseHTTPMiddleware`, `CORSMiddleware` (with
+`allow_origin_regex` in Python's `re` dialect over `Keel.Regex`),
+`GZipMiddleware` (a DEFLATE compressor in Lean), `TrustedHostMiddleware`,
+`HTTPSRedirectMiddleware`, `SessionMiddleware` (over lean-itsdangerous),
+cookies, `AuthenticationMiddleware` and `requires`.
+WebSockets (and the WebSocket test session) and lifespan follow in later
+milestones.
 
 ## License
 

@@ -13,7 +13,7 @@ middleware is a function with upstream's options and defaults, returning a
 
 The decisions are pure functions of the request (and, for CORS, of the
 response's headers): `trustedHostDecision`, `httpsRedirectURL`,
-`CORSConfig.preflight`, `CORSConfig.simpleHeaders`. The theorems are about
+`CORSConfig.preflight`, `CORSConfig.responseHeaders`. The theorems are about
 them (`Proofs/Middleware.lean`).
 -/
 

@@ -505,3 +505,220 @@ id = "excluded.host-websocket-lifespan"
 upstream = "tests/test_routing.py::test_host_routing"
 title = "Host routes, WebSocketRoute, lifespan, class endpoints: later cards (m7)"
 status = "excluded"
+
+# ---- m5: middleware, cookies, sessions, authentication ----
+
+[[requirement]]
+id = "middleware.stack-order"
+upstream = "starlette/applications.py:build_middleware_stack; tests/middleware/test_middleware.py"
+title = "Application middleware wraps in list order, the first outermost: Middleware f args reads as Middleware(f, **args)"
+status = "implemented"
+realises = ["LeanStarlette.middlewareStack", "LeanStarlette.BaseHTTPMiddleware"]
+theorem = ["LeanStarlette.middleware_stack_order"]
+test = ["tests/MiddlewareUsage.lean::app", "tests/MiddlewareCases.lean::goldenCases"]
+
+[[requirement]]
+id = "middleware.base-http"
+upstream = "tests/middleware/test_base.py"
+title = "BaseHTTPMiddleware(dispatch): dispatch(request, call_next) around the app; the request/stream, contextvars, background and disconnect tests are about ASGI messages, which this port does not expose"
+status = "tested"
+realises = ["LeanStarlette.BaseHTTPMiddleware"]
+test = ["tests/MiddlewareUsage.lean::app", "tests/MiddlewareCases.lean::goldenCases"]
+
+[[requirement]]
+id = "trusted-host.reject"
+upstream = "tests/middleware/test_trusted_host.py::test_trusted_host_middleware"
+title = "TrustedHostMiddleware: a host outside allowed_hosts ('*.' suffix patterns) is answered 400 'Invalid host header' before the app; www_redirect to the www. host"
+status = "implemented"
+realises = ["LeanStarlette.TrustedHostMiddleware", "LeanStarlette.trustedHostDecision", "LeanStarlette.hostMatches"]
+theorem = ["LeanStarlette.trusted_host_reject", "LeanStarlette.trusted_host_reject_400"]
+test = ["tests/MiddlewareCases.lean::goldenCases", "tests/Conformance.lean::mwGolden"]
+
+[[requirement]]
+id = "trusted-host.patterns-checked"
+upstream = "starlette/middleware/trustedhost.py:__init__ (assert on '*' placement)"
+title = "allowed_hosts patterns are checked when the app is built (decide +kernel on ValidHostPattern), where upstream asserts at construction"
+status = "implemented"
+realises = ["LeanStarlette.ValidHostPattern", "LeanStarlette.TrustedHostMiddleware"]
+test = ["tests/MiddlewareUsage.lean::app"]
+
+[[requirement]]
+id = "trusted-host.ipv6"
+upstream = "tests/middleware/test_trusted_host.py::test_trusted_host_middleware_ipv6; starlette/requests.py:_HOST_RE"
+title = "Host header parsing follows _HOST_RE: bracketed IPv6 literals validated as ipaddress.IPv6Address, IPvFuture, ports"
+status = "tested"
+realises = ["LeanStarlette.parseHostHeader", "LeanStarlette.isIPv6Address", "LeanStarlette.isIPv4Address"]
+test = ["tests/Props.lean::gzipProps", "tests/Conformance.lean::mwGolden"]
+
+[[requirement]]
+id = "https-redirect"
+upstream = "tests/middleware/test_https_redirect.py::test_https_redirect_middleware"
+title = "HTTPSRedirectMiddleware: http/ws requests get a 307 to https/wss, dropping :80 and :443"
+status = "implemented"
+realises = ["LeanStarlette.HTTPSRedirectMiddleware", "LeanStarlette.httpsRedirectURL"]
+theorem = ["LeanStarlette.https_redirect"]
+test = ["tests/MiddlewareCases.lean::goldenCases", "tests/Conformance.lean::mwGolden"]
+
+[[requirement]]
+id = "cors.preflight"
+upstream = "tests/middleware/test_cors.py::test_cors_disallowed_preflight"
+title = "CORS preflight: 200 'OK' with the allow headers when origin, method, headers and private network are allowed, otherwise 400 'Disallowed CORS ...' listing each failure"
+status = "implemented"
+realises = ["LeanStarlette.CORSMiddleware", "LeanStarlette.corsMiddleware", "LeanStarlette.CORSConfig.preflight", "LeanStarlette.CORSConfig.preflightFailures"]
+theorem = ["LeanStarlette.cors_preflight", "LeanStarlette.preflight_status", "LeanStarlette.preflightFailures_nil"]
+test = ["tests/MiddlewareCases.lean::goldenCases", "tests/Conformance.lean::mwGolden"]
+
+[[requirement]]
+id = "cors.simple"
+upstream = "tests/middleware/test_cors.py::test_cors_allow_specific_origin"
+title = "CORS simple requests: Access-Control-Allow-Origin, credentials, expose headers and Vary: Origin as upstream, including wildcard with credentials"
+status = "implemented"
+realises = ["LeanStarlette.CORSConfig.responseHeaders", "LeanStarlette.CORSConfig.isAllowedOrigin", "LeanStarlette.addVary"]
+theorem = ["LeanStarlette.cors_allowed_origin"]
+test = ["tests/MiddlewareCases.lean::goldenCases", "tests/Conformance.lean::mwGolden"]
+
+[[requirement]]
+id = "cors.origin-regex"
+upstream = "tests/middleware/test_cors.py::test_cors_allow_origin_regex_fullmatch"
+title = "allow_origin_regex is Python's re dialect parsed onto Keel.Regex and matched in full mode (re.fullmatch); re!\"...\" parses it at elaboration"
+status = "implemented"
+realises = ["LeanStarlette.PyRe.parse", "LeanStarlette.PyRe.Pattern.compile", "LeanStarlette.PyRe.compile"]
+theorem = ["Keel.Regex.compile_test_iff"]
+test = ["tests/MiddlewareCases.lean::unitGoldenCases", "tests/MiddlewareUsage.lean::app"]
+
+[[requirement]]
+id = "cors.origin-regex-unsupported"
+upstream = "starlette/middleware/cors.py:__init__ (re.compile(allow_origin_regex))"
+title = "Backreferences, lookaround, conditionals, atomic groups, possessive quantifiers, inline flags and \\N{} are refused at construction (Unsupported); '$' is '\\Z' (differs only for a pattern matching past a final newline, 'a$\\n'); repeats at most 1000, at most 100000 nodes"
+status = "deviation"
+realises = ["LeanStarlette.PyRe.parse", "LeanStarlette.PyRe.Error"]
+test = ["tests/MiddlewareCases.lean::regexUnsupported", "tests/MiddlewareCases.lean::unitGoldenCases"]
+
+[[requirement]]
+id = "cookies.parse"
+upstream = "tests/test_requests.py::test_cookie_lenient_parsing; tests/test_requests.py::test_cookies_edge_cases"
+title = "request.cookies is cookie_parser: split on ';', first '=', str.strip, http.cookies._unquote, later name wins in the first one's place; linear time, proved equal to the list-dict specification"
+status = "implemented"
+realises = ["LeanStarlette.cookieParser", "LeanStarlette.cookieParserSpec", "LeanStarlette.Request.cookies"]
+theorem = ["LeanStarlette.cookie_parse_print", "LeanStarlette.cookieParser_eq_spec"]
+test = ["tests/MiddlewareCases.lean::unitGoldenCases", "tests/Bench.lean::m5Bench"]
+
+[[requirement]]
+id = "cookies.set-delete"
+upstream = "tests/test_responses.py::test_set_cookie; tests/test_responses.py::test_delete_cookie"
+title = "set_cookie / delete_cookie print SimpleCookie's line (_quote, Morsel attribute order); a browser jar then holds the value, or no cookie"
+status = "implemented"
+realises = ["LeanStarlette.Response.set_cookie", "LeanStarlette.Response.delete_cookie", "LeanStarlette.setCookieLine", "LeanStarlette.cookieQuote"]
+theorem = ["LeanStarlette.set_cookie_receive", "LeanStarlette.delete_cookie_receive"]
+test = ["tests/MiddlewareCases.lean::unitGoldenCases"]
+
+[[requirement]]
+id = "cookies.options"
+upstream = "tests/test_responses.py::test_expires_on_set_cookie; tests/test_responses.py::test_delete_cookie_partitioned"
+title = "samesite is an enumeration; expires is a date or text (upstream's integer seconds-from-now needs the clock); delete_cookie expires at the Unix epoch where upstream prints now; partitioned prints Partitioned (Python 3.14's output, 3.13 raises)"
+status = "deviation"
+realises = ["LeanStarlette.SameSite", "LeanStarlette.CookieExpires", "LeanStarlette.Response.delete_cookie"]
+test = ["tests/MiddlewareCases.lean::unitGoldenCases"]
+
+[[requirement]]
+id = "cookies.non-latin1"
+upstream = "starlette/responses.py:set_cookie (UP-064)"
+title = "A cookie value character above U+00FF is sent as is; upstream raises UnicodeEncodeError (a 500)"
+status = "deviation"
+realises = ["LeanStarlette.Response.set_cookie"]
+test = ["tests/MiddlewareCases.lean::deviationCases"]
+
+[[requirement]]
+id = "sessions.sign-verify"
+upstream = "tests/middleware/test_session.py::test_session; starlette/middleware/sessions.py"
+title = "SessionMiddleware: TimestampSigner(secret).sign(b64encode(json.dumps(session))) byte-identical to upstream; within max_age the cookie reads back the same session"
+status = "implemented"
+realises = ["LeanStarlette.SessionMiddleware", "LeanStarlette.encodeSession", "LeanStarlette.decodeSession"]
+theorem = ["LeanStarlette.session_sign_verify"]
+test = ["tests/MiddlewareCases.lean::goldenCases", "tests/MiddlewareCases.lean::unitGoldenCases"]
+
+[[requirement]]
+id = "sessions.flags"
+upstream = "tests/middleware/test_session.py::test_set_cookie_only_on_modification; tests/middleware/test_session.py::test_vary_cookie_on_access"
+title = "Cookie set only when modified, cleared when emptied, Vary: Cookie on access; path, domain, same_site, https_only, partitioned and max_age flags as upstream"
+status = "tested"
+realises = ["LeanStarlette.sessionFlags", "LeanStarlette.sessionResponseHeaders", "LeanStarlette.Request.session"]
+test = ["tests/MiddlewareCases.lean::goldenCases"]
+
+[[requirement]]
+id = "sessions.latin1"
+upstream = "starlette/middleware/sessions.py:__call__ (data.encode('utf-8'))"
+title = "The session cookie is read as Latin-1 bytes where upstream encodes UTF-8; a signed value is ASCII, so any other character fails the signature either way"
+status = "deviation"
+realises = ["LeanStarlette.latin1Bytes?", "LeanStarlette.decodeSession"]
+theorem = ["LeanStarlette.latin1Bytes_chars"]
+test = ["tests/MiddlewareCases.lean::goldenCases"]
+
+[[requirement]]
+id = "auth.middleware"
+upstream = "tests/test_authentication.py::test_authentication_required; tests/test_authentication.py::test_custom_on_error"
+title = "AuthenticationMiddleware(backend, on_error): request.auth and request.user, UnauthenticatedUser, 400 on AuthenticationError by default"
+status = "tested"
+realises = ["LeanStarlette.AuthenticationMiddleware", "LeanStarlette.Request.auth", "LeanStarlette.Request.user", "LeanStarlette.SimpleUser"]
+test = ["tests/MiddlewareCases.lean::goldenCases"]
+
+[[requirement]]
+id = "auth.requires"
+upstream = "tests/test_authentication.py::test_authentication_redirect"
+title = "requires(scopes, endpoint, status_code, redirect): HTTPException(403) or a 303 to the named route with ?next=; it wraps the endpoint, so upstream's signature inspection has nothing to find"
+status = "deviation"
+realises = ["LeanStarlette.requires", "LeanStarlette.hasRequiredScope"]
+test = ["tests/MiddlewareCases.lean::goldenCases"]
+
+[[requirement]]
+id = "auth.websocket"
+upstream = "tests/test_authentication.py::test_websocket_authentication_required"
+title = "WebSocket endpoints and their authentication are not in this port"
+status = "excluded"
+
+[[requirement]]
+id = "gzip.minimum-size"
+upstream = "tests/middleware/test_gzip.py::test_gzip_ignored_for_small_responses"
+title = "A body under minimum_size is passed through untouched; otherwise Vary: Accept-Encoding, and gzip when accepted"
+status = "implemented"
+realises = ["LeanStarlette.GZipMiddleware", "LeanStarlette.gzipResponse", "LeanStarlette.gzipWhole"]
+theorem = ["LeanStarlette.gzip_minimum_size", "LeanStarlette.gzipWhole_small"]
+test = ["tests/MiddlewareCases.lean::goldenCases", "tests/Conformance.lean::mwGolden"]
+
+[[requirement]]
+id = "gzip.pass-through"
+upstream = "tests/middleware/test_gzip.py::test_gzip_ignored_for_responses_with_encoding_set; tests/middleware/test_gzip.py::test_gzip_default_exclude_content_types"
+title = "Content-Encoding set, 206, excluded media types (text/event-stream, application/grpc, image/*, … normalised as upstream) pass through; streams are sync-flushed per piece"
+status = "tested"
+realises = ["LeanStarlette.gzipPassThrough", "LeanStarlette.gzipExcluded", "LeanStarlette.gzipStream"]
+test = ["tests/MiddlewareCases.lean::goldenCases", "tests/Props.lean::gzipProps"]
+
+[[requirement]]
+id = "gzip.no-body-status"
+upstream = "starlette/middleware/gzip.py:send_with_compression (UP-063)"
+title = "A status that forbids content (1xx, 204, 304) passes through GZip untouched; upstream with minimum_size=0 gzips the empty body and declares Content-Length: 20"
+status = "deviation"
+realises = ["LeanStarlette.gzipPassThrough"]
+test = ["tests/MiddlewareCases.lean::deviationCases"]
+
+[[requirement]]
+id = "gzip.compressor"
+upstream = "starlette/middleware/gzip.py:GZipResponder (gzip.GzipFile, compresslevel)"
+title = "The DEFLATE compressor is Lean's (LZ77 with lazy matching, dynamic Huffman); its bytes differ from zlib's and compresslevel is accepted and unused; the decompressed body is what is fixed, checked through lean-httpx's gunzip and Python's zlib"
+status = "deviation"
+realises = ["LeanStarlette.Deflate.gzip", "LeanStarlette.Deflate.deflate", "LeanStarlette.Deflate.crc32Update"]
+test = ["tests/Props.lean::gzipProps", "tests/Bench.lean::gzipTest"]
+
+[[requirement]]
+id = "gzip.asgi-extensions"
+upstream = "tests/middleware/test_gzip.py::test_gzip_trailers; tests/middleware/test_gzip.py::test_gzip_passes_through_early_hints; tests/middleware/test_gzip.py::test_gzip_ignored_for_pathsend_responses"
+title = "HTTP trailers, 103 early hints and http.response.pathsend are ASGI extensions this port does not have"
+status = "excluded"
+
+[[requirement]]
+id = "m5.hostile-benches"
+upstream = "tests/golden/record_m5_bench.py (Starlette 1.8.0, warm best of 5)"
+title = "A 1 MB Cookie header (70k names, 100k repeats, 50k quoted), 1000 requests against 10 000 CORS origins, and 10 MB text / 20 MB zeros / 2 MB random bodies through GZip over TCP, each within twice upstream"
+status = "tested"
+realises = ["LeanStarlette.cookieParser", "LeanStarlette.CORSMiddleware", "LeanStarlette.GZipMiddleware"]
+test = ["tests/Bench.lean::m5Bench", "scripts/bench.sh"]

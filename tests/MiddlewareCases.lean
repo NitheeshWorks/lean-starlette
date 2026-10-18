@@ -374,4 +374,17 @@ def unitGoldenCases : IO (List (String × String × IO Bool)) := do
   let lines ← IO.FS.lines "tests/golden/m5-units-starlette-1.8.0.jsonl"
   return lines.toList.filterMap fun l => (from_json l).toOption.bind fun j => unitCase j.val
 
+/-! ## Documented deviations, checked here (no upstream golden: upstream fails) -/
+
+def deviationCases : List (String × String × IO Bool) := [
+  ("starlette/middleware/gzip.py:send_with_compression (UP-063; deviation gzip.no-body-status)",
+    "gzip: a 204 passes through untouched with minimum_size=0", do
+    let app := gz (fun _ => pure (Response (status_code := 204))) (Middleware GZipMiddleware (minimum_size := 0))
+    let r ← app.call { headers := Headers.ofList [("host", "testserver"), ("accept-encoding", "gzip")] }
+    pure (r.status_code == 204 && r.body.size == 0 && (r.headers.get? "content-encoding").isNone)),
+  ("starlette/responses.py:set_cookie (UP-064; deviation cookies.non-latin1)",
+    "set_cookie: a value above U+00FF is sent as is (quoted, as http.cookies prints it)", do
+    let r := (PlainTextResponse "ok").set_cookie "name" "\u0101"
+    pure (r.headers.get? "set-cookie" == some "name=\"\u0101\"; Path=/; SameSite=lax"))]
+
 end MiddlewareCases
