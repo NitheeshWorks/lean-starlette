@@ -123,8 +123,10 @@ theorem redirect_307 (url : String) :
 
 /-- **`JSONResponse`'s body is the value's JSON**: for a finite value (no
 NaN or infinity, which upstream's `allow_nan=False` rejects) within
-lean-json's integer and depth limits, the body parses back to the value. -/
-theorem json_response_body (j : LeanJson.Json) (hint : LeanJson.Spec.IntsFit j) (hd : j.height ≤ 200)
+lean-json's integer and depth limits, and with no repeated object key (the
+parser keeps the last, as a `dict` does), the body parses back to the value. -/
+theorem json_response_body (j : LeanJson.Json) (hint : LeanJson.Spec.IntsFit j)
+    (hkeys : LeanJson.Spec.KeysUnique j) (hd : j.height ≤ 200)
     (hfin : j.allFinite = true) :
     (LeanJson.from_json (JSONResponse j).body).map (·.val) = .ok j := by
   have : (JSONResponse j).body = (LeanJson.to_json j).val := by
@@ -132,7 +134,7 @@ theorem json_response_body (j : LeanJson.Json) (hint : LeanJson.Spec.IntsFit j) 
     simp only [JSONResponse, Responses.jsonRender, hj, hfin, ↓reduceIte, Response.make, allowedBody, bodyAllowed]
     rfl
   rw [this]
-  exact LeanJson.from_json_to_json j none false hint hd
+  exact LeanJson.from_json_to_json j none false hint hkeys hd
 
 /-- **NaN and infinities are refused**, as `allow_nan=False` refuses them:
 the response is a 500. -/

@@ -75,7 +75,8 @@ def Redirect307 : Prop :=
 
 /-- `JSONResponse`'s body parses back to a finite value. -/
 def JsonResponseBody : Prop :=
-  ∀ (j : LeanJson.Json), LeanJson.Spec.IntsFit j → j.height ≤ 200 → j.allFinite = true →
+  ∀ (j : LeanJson.Json), LeanJson.Spec.IntsFit j → LeanJson.Spec.KeysUnique j → j.height ≤ 200 →
+    j.allFinite = true →
     (LeanJson.from_json (JSONResponse j).body).map (·.val) = .ok j
 
 /-- A route's URL for valid captures routes back to them (aligned templates). -/

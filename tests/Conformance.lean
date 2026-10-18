@@ -351,11 +351,11 @@ def requestCases : List Case := [
     ok (jsonEq r1.json (json% {"method": "GET", "url": "http://testserver/123?a=abc"}) &&
       jsonEq r2.json (json% {"method": "GET", "url": "https://example.org:123/"}))⟩,
   ⟨"tests/test_requests.py::test_request_query_params", "request.query_params", do
-    let a := echoApp fun r => pure (Json.obj [("params", Json.obj (r.queryParams.dictItems.map fun (k, v) => (k, .str v)))])
+    let a := echoApp fun r => pure (Json.obj #[("params", Json.obj (r.queryParams.dictItems.map fun (k, v) => (k, Json.str v)).toArray)])
     let r ← TestClient.get a "/?a=123&b=456"
     ok (jsonEq r.json (json% {"params": {"a": "123", "b": "456"}}))⟩,
   ⟨"tests/test_requests.py::test_request_headers", "request.headers", do
-    let a := echoApp fun r => pure (Json.obj [("headers", Json.obj (r.headers.dict.map fun (k, v) => (k, .str v)))])
+    let a := echoApp fun r => pure (Json.obj #[("headers", Json.obj (r.headers.dict.map fun (k, v) => (k, Json.str v)).toArray)])
     let r ← TestClient.get a "/" (headers := [("host", "example.org")])
     ok (jsonEq r.json (json% {"headers": {"accept": "*/*", "accept-encoding": "gzip, deflate, zstd",
       "connection": "keep-alive", "user-agent": "testclient", "host": "example.org"}}))⟩,
