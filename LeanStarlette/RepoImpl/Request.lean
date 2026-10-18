@@ -185,17 +185,64 @@ end URLPath
 def isHostChar (c : Char) : Bool :=
   ('a' ≤ c && c ≤ 'z') || ('A' ≤ c && c ≤ 'Z') || isDigitChar c || "._~%!$&'()*+,;=-".toList.contains c
 
-/-- `parse_host_header`: `(host, port?)` for a well-formed `Host` value. An
-IP literal keeps its brackets; it is checked for its character set only
-(see `CONTRIBUTING.md`). -/
+/-- `ipaddress.IPv4Address(s)`: four decimal octets, each at most 255,
+without leading zeros. -/
+def isIPv4Address (s : List Char) : Bool :=
+  let parts := splitAll '.' s
+  parts.length == 4 && parts.all fun o =>
+    !o.isEmpty && o.length ≤ 3 && o.all isDigitChar && ofDigits o ≤ 255 && !(o.length > 1 && o.head? == some '0')
+
+/-- `ipaddress.IPv6Address(s)` (`_ip_int_from_string`): at most eight
+1–4-digit hex groups, a trailing dotted IPv4 counting as two, and one `::`
+standing for at least one zero group. -/
+def isIPv6Address (s : List Char) : Bool :=
+  let parts := splitAll ':' s
+  if parts.length < 3 then false else
+  let (parts, v4ok) := match parts.getLast? with
+    | some last => if last.contains '.' then (parts.dropLast ++ [['0'], ['0']], isIPv4Address last) else (parts, true)
+    | none => (parts, true)
+  if !v4ok || parts.length > 9 then false else
+  let interiorEmpty := ((List.range parts.length).filter fun i => 0 < i && i + 1 < parts.length &&
+    (parts.getD i []).isEmpty)
+  let hextet (p : List Char) : Bool := !p.isEmpty && p.length ≤ 4 && p.all isHexChar
+  let n := parts.length
+  let firstEmpty := (parts.headD []).isEmpty
+  let lastEmpty := (parts.getLastD []).isEmpty
+  match interiorEmpty with
+  | [k] =>
+    -- `::` at k: a leading (trailing) `:` only as part of it
+    let hi := if firstEmpty then k - 1 else k
+    let lo := if lastEmpty then n - k - 2 else n - k - 1
+    (!firstEmpty || k == 1) && (!lastEmpty || k + 2 == n) && hi + lo ≤ 7 &&
+      (parts.take hi).all hextet && (parts.drop (n - lo)).all hextet
+  | [] => n == 8 && parts.all hextet
+  | _ => false
+
+/-- `parse_host_header`: `(host, port?)` for a well-formed `Host` value
+(`_HOST_RE`, then `IPv6Address` on an IPv6 literal). An IP literal keeps its
+brackets. -/
 def parseHostHeader (v : String) : Option (String × Option String) :=
   let cs := v.toList
+  let lowerHex (c : Char) : Bool := isHexChar c
   let (host, rest) := match cs with
     | '[' :: r =>
       match splitFirst ']' r with
       | (inner, some after) =>
-        if !inner.isEmpty && inner.all (fun c => isHexChar c || c = ':' || c = '.' || c = 'v' || isHostChar c)
-        then (some ('[' :: inner ++ [']']), after) else (none, [])
+        let ok := match inner with
+          -- IPvFuture: `v` (lower case only), hex digits, `.`, then unreserved, sub-delims or `:`
+          | 'v' :: t =>
+            let hex := t.takeWhile lowerHex
+            match t.drop hex.length with
+            | '.' :: tail => !hex.isEmpty && !tail.isEmpty &&
+                tail.all fun c => (isHostChar c && c ≠ '%') || c = ':'
+            | _ => false
+          | _ =>
+            -- `[a-f0-9]*:[a-f0-9.:]+`, then a valid IPv6 address
+            let pre := inner.takeWhile lowerHex
+            match inner.drop pre.length with
+            | ':' :: tail => !tail.isEmpty && tail.all (fun c => lowerHex c || c = '.' || c = ':') && isIPv6Address inner
+            | _ => false
+        if ok then (some ('[' :: inner ++ [']']), after) else (none, [])
       | _ => (none, [])
     | _ =>
       let h := cs.takeWhile (· ≠ ':')

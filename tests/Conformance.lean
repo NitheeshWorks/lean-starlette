@@ -1,5 +1,6 @@
 import LeanStarlette
 import tests.MiddlewareUsage
+import tests.MiddlewareCases
 
 /-!
 # Conformance cases
@@ -1353,12 +1354,14 @@ def main : IO UInt32 := do
   let filesBehaviour := filesBehaviourCases (← makeFixture)
   let formGolden ← formGoldenCases
   let tcGolden ← tcGoldenCases
+  let mwGolden := ((← MiddlewareCases.goldenCases) ++ (← MiddlewareCases.unitGoldenCases)).map
+    fun (u, n, r) => (⟨u, n, r⟩ : Case)
   let _ ← IO.asTask (socketApp.run (port := socketPort)) .dedicated
   let _ ← IO.asTask (tcApp.run (port := tcPort)) .dedicated
   let _ ← IO.asTask ((formApp "plain" {}).run (port := formPort)) .dedicated
   let _ ← IO.asTask ((formApp "plain" {}).run (port := stallPort) (config := { lingeringTimeout := 1000 })) .dedicated
   IO.sleep 1500
-  let cases := cases ++ golden ++ filesGolden ++ filesBehaviour ++ formGolden ++ tcGolden ++ formDataCases ++ socketCases ++ chunkedCases ++ tcSocketCases ++ slowUploadCases
+  let cases := cases ++ golden ++ filesGolden ++ filesBehaviour ++ formGolden ++ tcGolden ++ formDataCases ++ socketCases ++ chunkedCases ++ tcSocketCases ++ slowUploadCases ++ mwGolden
   for c in cases do
     let ok ← try c.run catch e => do IO.println s!"      {e}"; pure false
     IO.println s!"{if ok then "ok  " else "FAIL"}  {c.name}  [{c.upstream}]"

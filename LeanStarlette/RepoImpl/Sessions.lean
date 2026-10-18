@@ -82,7 +82,7 @@ def sessionFlags (same_site : SameSite) (https_only : Bool) (domain : Option Str
     (match domain with | some d => "; domain=" ++ d | none => "") ++ (if partitioned then "; partitioned" else "")
 
 /-- The headers `SessionMiddleware` sends after the application ran. -/
-def sessionResponseHeaders (t : TimestampSigner) (session_cookie : String) (max_age : Option Nat) (path flags : String)
+def sessionResponseHeaders (t : TimestampSigner) (session_cookie : String) (max_age : Option Int) (path flags : String)
     (initialEmpty : Bool) (s : SessionState) (now : UInt64) (h : Headers) : Headers :=
   let h := if s.accessed then addVary h "Cookie" else h
   if s.modified && !s.data.isEmpty then
@@ -97,7 +97,7 @@ max_age=14 * 24 * 60 * 60, path="/", same_site="lax", https_only=False,
 domain=None, partitioned=False)`**. `now` is the clock (the wall clock by
 default). -/
 def SessionMiddleware (secret_key : String) (session_cookie : String := "session")
-    (max_age : Option Nat := some (14 * 24 * 60 * 60)) (path : String := "/") (same_site : SameSite := .lax)
+    (max_age : Option Int := some (14 * 24 * 60 * 60)) (path : String := "/") (same_site : SameSite := .lax)
     (https_only : Bool := false) (domain : Option String := none) (partitioned : Bool := false)
     (now : IO UInt64 := unixNow) : Middleware :=
   let t := TimestampSigner.new secret_key
@@ -105,7 +105,12 @@ def SessionMiddleware (secret_key : String) (session_cookie : String := "session
   fun app req => do
     let clock ← liftM now
     let (initial, initialEmpty) ← match req.cookies.lookup session_cookie with
-      | some c => match decodeSession t max_age clock c with
+      | some c =>
+        -- a negative max_age expires every cookie (itsdangerous: age > max_age)
+        let load := match max_age with
+          | some m => if m < 0 then SessionLoad.invalid else decodeSession t (some m.toNat) clock c
+          | none => decodeSession t none clock c
+        match load with
         | .loaded d => pure (d, false)
         | .invalid => pure (#[], true)
         | .broken why => throw (.custom "ValueError" why .null)
@@ -154,6 +159,29 @@ def Request.sessionPop (r : Request) (key : String) : AppM (Option Json) := do
     liftM (ref.set { s with data := s.data.filter (·.1 != key), modified := true } : IO Unit)
     return some v
   | none => return none
+
+/-- `request.session.popitem()`: the last item (upstream raises `KeyError`
+on an empty session). -/
+def Request.sessionPopItem (r : Request) : AppM (String × Json) := do
+  let ref ← r.sessionRef
+  let s ← liftM (ref.get : IO SessionState)
+  match s.data.back? with
+  | some kv =>
+    liftM (ref.set { s with data := s.data.pop, modified := true } : IO Unit)
+    return kv
+  | none => throw (.custom "KeyError" "popitem(): dictionary is empty" .null)
+
+/-- `request.session.setdefault(key, default)`. -/
+def Request.sessionSetDefault (r : Request) (key : String) (default : Json := .null) : AppM Json := do
+  match ← r.sessionGet key with
+  | some v => return v
+  | none => r.sessionSet key default; return default
+
+/-- `del request.session[key]` (upstream raises `KeyError` when absent). -/
+def Request.sessionDelete (r : Request) (key : String) : AppM Unit := do
+  match ← r.sessionPop key with
+  | some _ => return ()
+  | none => throw (.custom "KeyError" key .null)
 
 /-- `request.session.clear()`. -/
 def Request.sessionClear (r : Request) : AppM Unit := do

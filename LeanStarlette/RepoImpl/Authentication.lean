@@ -66,9 +66,10 @@ def Request.user (r : Request) : AppM BaseUser :=
 def hasRequiredScope (creds : AuthCredentials) (scopes : List String) : Bool :=
   scopes.all creds.scopes.contains
 
-/-- **`@requires(scopes, status_code=403, redirect=None)`** on an endpoint. -/
-def requires (scopes : List String) (status_code : Nat := 403) (redirect : Option String := none)
-    (endpoint : Request → AppM Response) (h : StatusCode.Valid status_code := by decide) :
+/-- **`@requires(scopes, status_code=403, redirect=None)`** on an endpoint:
+`requires ["authenticated"] endpoint (redirect := some "login")`. -/
+def requires (scopes : List String) (endpoint : Request → AppM Response) (status_code : Nat := 403)
+    (redirect : Option String := none) (h : StatusCode.Valid status_code := by decide) :
     Request → AppM Response := fun req => do
   let creds ← req.auth
   if hasRequiredScope creds scopes then endpoint req else
