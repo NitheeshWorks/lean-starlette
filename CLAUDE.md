@@ -24,6 +24,11 @@ lake env lean LeanStarlette/Proofs/Foo.lean     # check one file (never bare `le
 * Every theorem reaches only `propext`, `Quot.sound`, `Classical.choice`.
 * Every symbol in `docs/traceability.toml` resolves; every test path exists.
 
+## Commit messages
+
+No `Co-Authored-By:` line and no AI or Claude attribution trailer, in
+commits or PR descriptions.
+
 ## How to add something
 
 1. Type in `DataTypes/` (invariants as fields), definition in `RepoImpl/`
@@ -35,5 +40,6 @@ lake env lean LeanStarlette/Proofs/Foo.lean     # check one file (never bare `le
 4. Update `CONTRIBUTING.md` if the architecture or the tested-not-proved list
    changed.
 
-Upstream sources are the spec, never copied. Read them from a scratch clone;
+Upstream sources are the spec, never copied. Read them from
+`/home/nitheesh/Official/NitheeshWorks/upstream-spec/`;
 cite the test by path in the conformance case and the traceability row.
