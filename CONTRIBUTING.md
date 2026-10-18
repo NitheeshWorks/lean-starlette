@@ -49,7 +49,9 @@ be a Hoare triple over a heap.
 * **Numbers.** `Nat`/`Int`/decimal-as-rational in proofs. `Float` only at the
   boundary via `Float.toBits`. Never `bv_decide` or `native_decide`.
 * **The gate.** `scripts/check.sh` runs what CI runs: build, `sorry` grep,
-  `scripts/Axioms.lean` (every theorem under `LeanStarlette` reaches only `propext`,
+  `lake exe axioms LeanStarlette` (`scripts/Axioms.lean`, a byte-for-byte
+  copy of `stack-tools/Axioms.lean` pinned by `scripts/Axioms.sha256`, which
+  CI checks; changes go to stack-tools first: every theorem under `LeanStarlette` reaches only `propext`,
   `Quot.sound`, `Classical.choice`), `lake exe props`, `lake exe conformance`,
   the traceability check.
 

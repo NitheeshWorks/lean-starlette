@@ -21,8 +21,10 @@ jobs:
       - uses: actions/checkout@v5
       - uses: leanprover/lean-action@v1
         with: { test: false, lint: false }
+      - name: The gate is the pinned copy of stack-tools/Axioms.lean
+        run: echo "$(cat scripts/Axioms.sha256)  scripts/Axioms.lean" | sha256sum --check
       - name: Verification gate (axioms, sorry/admit, partial, unsafe, implemented_by, extern)
-        run: lake env lean --run scripts/Axioms.lean LeanStarlette
+        run: lake exe axioms LeanStarlette
       - name: Property tests
         run: lake exe props
       - name: Conformance

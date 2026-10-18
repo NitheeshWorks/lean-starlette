@@ -59,3 +59,8 @@ rev = "main"
 name = "Keel"
 git = "https://github.com/NitheeshWorks/lean-keel"
 rev = "main"
+
+[[lean_exe]]
+name = "axioms"
+root = "scripts.Axioms"
+supportInterpreter = true

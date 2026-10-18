@@ -3,7 +3,11 @@ import Lean
 /-!
 # The verification gate
 
-Run with `lake env lean --run scripts/Axioms.lean <LibraryRoot>`.
+Run with `lake exe axioms <LibraryRoot>` (the `axioms` executable of the
+lakefile). Compiled, it holds one environment, the one it checks: under
+`lean --run` the script's own `import Lean` is loaded as well, which doubled
+the peak (3.9 GB against 1.8 GB for LeanFastapi). Only the library's modules
+are walked, from their module data.
 
 Every declaration in a module under the given library root is checked, not only
 the theorems, because a proof can hide inside a definition (a refinement
@@ -67,43 +71,45 @@ unsafe def main (args : List String) : IO UInt32 := do
   let mut theorems := 0
   let mut decls := 0
   let mut buckets : Std.HashMap (List Name) Nat := {}
-  for (n, ci) in env.constants.map₁.toList do
-    let some modIdx := env.getModuleIdxFor? n | continue
-    let modName := env.header.moduleNames[modIdx.toNat]!
-    unless root.isPrefixOf modName do continue
-    -- `partial def f` makes `f` an opaque constant implemented by `f._unsafe_rec`.
-    -- A definition by well-founded recursion also gets an `_unsafe_rec` twin
-    -- for code generation, but `f` stays a checked definition, so only an
-    -- opaque base counts as partial.
-    if let .str base "_unsafe_rec" := n then
-      if let some (.opaqueInfo _) := env.find? base then
-        if let some (_, why) := allow.find? (·.1 == base) then
-          used := used.insert base
-          allowedNotes := allowedNotes.push s!"allowed partial: {base} ({why})"
-        else
-          bad := bad.push s!"PARTIAL: {base} is a partial def (write it totally, or justify it in scripts/gate-allow.txt)"
-      continue
-    if n.isInternal then continue
-    let excused := allow.any (·.1 == n)
-    if excused then used := used.insert n
-    let flag (msg : String) : Array String → Array String := fun b => if excused then b else b.push msg
-    if ci.isUnsafe then bad := flag s!"UNSAFE: {n} is unsafe" bad
-    if let .defnInfo d := ci then
-      if d.safety == .partial then bad := flag s!"PARTIAL: {n} is a partial def" bad
-    if (Compiler.implementedByAttr.getParam? env n).isSome then
-      bad := flag s!"IMPLEMENTED_BY: {n} has @[implemented_by]" bad
-    if isExtern env n then bad := flag s!"EXTERN: {n} has @[extern]" bad
-    if excused then allowedNotes := allowedNotes.push s!"allowed: {n} ({(allow.find? (·.1 == n)).map (·.2) |>.getD ""})"
-    if ci.isUnsafe then continue
-    decls := decls + 1
-    let axioms : Array Name := (collectAxioms (m := ReaderT Environment Id) n).run env
-    let axioms := axioms.qsort (·.toString < ·.toString)
-    if ci matches .thmInfo _ then
-      theorems := theorems + 1
-      buckets := buckets.insert axioms.toList (buckets.getD axioms.toList 0 + 1)
-    let impure := axioms.filter (fun a => !(allowed.contains a))
-    unless impure.isEmpty do
-      bad := bad.push s!"AXIOM: {n} depends on {impure}"
+  -- Only the library's own modules, and their constants straight from the
+  -- module data (no list of every imported constant).
+  let mine := (env.header.moduleNames.zip env.header.moduleData).filter (root.isPrefixOf ·.1)
+  for (_, md) in mine do
+    for n in md.constNames do
+      let some ci := env.find? n | continue
+      -- `partial def f` makes `f` an opaque constant implemented by `f._unsafe_rec`.
+      -- A definition by well-founded recursion also gets an `_unsafe_rec` twin
+      -- for code generation, but `f` stays a checked definition, so only an
+      -- opaque base counts as partial.
+      if let .str base "_unsafe_rec" := n then
+        if let some (.opaqueInfo _) := env.find? base then
+          if let some (_, why) := allow.find? (·.1 == base) then
+            used := used.insert base
+            allowedNotes := allowedNotes.push s!"allowed partial: {base} ({why})"
+          else
+            bad := bad.push s!"PARTIAL: {base} is a partial def (write it totally, or justify it in scripts/gate-allow.txt)"
+        continue
+      if n.isInternal then continue
+      let excused := allow.any (·.1 == n)
+      if excused then used := used.insert n
+      let flag (msg : String) : Array String → Array String := fun b => if excused then b else b.push msg
+      if ci.isUnsafe then bad := flag s!"UNSAFE: {n} is unsafe" bad
+      if let .defnInfo d := ci then
+        if d.safety == .partial then bad := flag s!"PARTIAL: {n} is a partial def" bad
+      if (Compiler.implementedByAttr.getParam? env n).isSome then
+        bad := flag s!"IMPLEMENTED_BY: {n} has @[implemented_by]" bad
+      if isExtern env n then bad := flag s!"EXTERN: {n} has @[extern]" bad
+      if excused then allowedNotes := allowedNotes.push s!"allowed: {n} ({(allow.find? (·.1 == n)).map (·.2) |>.getD ""})"
+      if ci.isUnsafe then continue
+      decls := decls + 1
+      let axioms : Array Name := (collectAxioms (m := ReaderT Environment Id) n).run env
+      let axioms := axioms.qsort (·.toString < ·.toString)
+      if ci matches .thmInfo _ then
+        theorems := theorems + 1
+        buckets := buckets.insert axioms.toList (buckets.getD axioms.toList 0 + 1)
+      let impure := axioms.filter (fun a => !(allowed.contains a))
+      unless impure.isEmpty do
+        bad := bad.push s!"AXIOM: {n} depends on {impure}"
   IO.println s!"{theorems} theorems, {decls} declarations checked under {root}"
   for (ax, k) in buckets.toList do
     let label := if ax.isEmpty then "none (fully constructive)" else ", ".intercalate (ax.map toString)
