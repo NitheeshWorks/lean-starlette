@@ -174,9 +174,9 @@ notes on xpnwkxj1gfz9); this repository takes the fix with `lake update Keel`.
 `lake build bench && /usr/bin/time -v .lake/build/bin/bench array 20`: one
 `POST` of a 20 MB JSON array (2.6 million integers) through
 `Application.exchange` and `request.json()` peaks at 237 MB resident, 0.7 s
-(lean-json 5c4d6ad; it was 650 MB before lean-json's compact representation).
-A wide object is quadratic in its key count in lean-json 5c4d6ad (1 MB, 68k
-keys: 6 s), reported to lean-json with the cause.
+(lean-json 5c4d6ad; it was 650 MB before lean-json's compact representation). A 100k-key, 1.4 MB object through `request.json()` takes 67 ms at lean-json bca7cc0 (conformance `benchCases`, bound 250 ms; upstream 0.11 s).
+(A wide object was quadratic in its key count in lean-json 5c4d6ad, 1 MB with
+68k keys taking 6 s; fixed in lean-json bca7cc0.)
 
 ## Tests
 

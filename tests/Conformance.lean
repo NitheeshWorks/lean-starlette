@@ -734,6 +734,34 @@ def goldenCases : IO (List Case) := do
   let lines ← IO.FS.lines "tests/golden/starlette-1.8.0.jsonl"
   return lines.toList.filterMap fun l => (from_json l).toOption.bind fun j => goldenCase j.val
 
+/-! ## Bench bounds (CI), at about twice upstream's time
+
+Upstream times measured on Starlette 1.8.0 / CPython 3.13 by the critic. -/
+
+/-- `{"key000000": 0, ...}`: `n` keys, about 14 bytes each. -/
+def wideObject (n : Nat) : ByteArray := Id.run do
+  let mut out := ByteArray.emptyWithCapacity (n * 16 + 2)
+  out := out.push 123
+  for i in [0:n] do
+    if i > 0 then out := out.push 44
+    let k := toString i
+    out := out ++ s!"\"key{String.ofList (List.replicate (6 - k.length) '0')}{k}\":{i % 10}".toUTF8
+  out.push 125
+
+def benchCases : List Case := [
+  ⟨"bench: request.json() on a 100k-key object (upstream 0.11 s; bound 0.25 s)", "100k-key 1.4 MB JSON body", do
+    let body := wideObject 100000
+    let app := Starlette (routes := [Route "/" (fun (r : Request) => do
+      let j ← r.json
+      let n := match j with | .obj kvs => kvs.size | _ => 0
+      return PlainTextResponse (toString n) : Request → AppM Response) (methods := ["POST"])])
+    let t0 ← IO.monoMsNow
+    let r ← TestClient.request app "POST" "/" [("content-type", "application/json")] body
+    let ms := (← IO.monoMsNow) - t0
+    IO.println s!"      {body.size} bytes, {r.text} keys in {ms} ms"
+    ok (body.size ≥ 1400000 && r.status_code == 200 && r.text == "100000" && ms ≤ 250)⟩
+]
+
 /-! ## Files, static files, streaming, background tasks: golden from Starlette 1.8.0
 
 `tests/golden/record_files.py` records `tests/golden/files-starlette-1.8.0.jsonl`
@@ -872,7 +900,7 @@ def numericCases : List Case := [
 
 def cases : List Case :=
   routingCases ++ convertorCases ++ responseCases ++ requestCases ++ datastructureCases ++
-    exceptionCases ++ applicationCases ++ transportCases ++ numericCases
+    exceptionCases ++ applicationCases ++ transportCases ++ numericCases ++ benchCases
 
 def main : IO UInt32 := do
   let mut failures := 0
