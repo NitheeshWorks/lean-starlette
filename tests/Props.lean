@@ -1,4 +1,5 @@
 import LeanStarlette
+import LeanStarlette.RepoImpl.Deflate
 
 /-!
 # Property tests: fast feedback where there is no proof
@@ -217,13 +218,73 @@ def properties : List Property := [
       (fun _ => s!"{enc.size} bytes, cut {cut}"), r)⟩
 ]
 
+/-- Bytes with repeats (a small alphabet, runs and copies of earlier
+stretches), sometimes past one 64 KiB block. -/
+def randBytes (r : Rng) : ByteArray × Rng := Id.run do
+  let (big, r) := r.nat 20
+  let (n, r) := r.nat (if big == 0 then 140000 else 3000)
+  let (alpha, r) := r.nat 4
+  let mut r := r
+  let mut b := ByteArray.emptyWithCapacity n
+  for _ in [0:n] do
+    if b.size ≥ n then break
+    let (k, r1) := r.nat 10
+    r := r1
+    if k == 0 && b.size > 10 then
+      -- copy an earlier stretch
+      let (back, r2) := r.nat (min b.size 40000)
+      let (len, r3) := r2.nat 300
+      r := r3
+      let start := b.size - (back + 1)
+      for i in [0:len] do b := b.push b[start + i % (back + 1)]!
+    else
+      let (v, r2) := r.nat (if alpha == 0 then 256 else 4 * alpha)
+      r := r2
+      b := b.push v.toUInt8
+  return (b.extract 0 n, r)
+
+def gzipProps : List Property := [
+  ⟨"gzip: lean-httpx's gunzip reads back Deflate.gzip of any bytes", fun r =>
+    let (b, r) := randBytes r
+    let back := LeanHttpx.Decoders.gunzip (Deflate.gzip b)
+    (check "gzip" (match back with | .ok x => x == b | .error _ => false) (fun _ => s!"{b.size} bytes"), r)⟩,
+  ⟨"gzip stream: sync-flushed pieces concatenate into one gzip member", fun r =>
+    let (b, r) := randBytes r
+    let (c1, r) := r.nat (b.size + 1)
+    let (c2, r) := r.nat (b.size + 1)
+    let (lo, hi) := (min c1 c2, max c1 c2)
+    let pieces := [b.extract 0 lo, b.extract lo hi, b.extract hi b.size]
+    let crc := pieces.foldl Deflate.crc32Update 0
+    let z := Deflate.gzipHeader ++ pieces.foldl (fun acc p => acc ++ Deflate.deflate p false) .empty ++
+      Deflate.deflate .empty true ++ Deflate.gzipTrailer crc b.size
+    (check "gzip-stream" (match LeanHttpx.Decoders.gunzip z with | .ok x => x == b | .error _ => false)
+      (fun _ => s!"{b.size} bytes cut at {lo}, {hi}"), r)⟩,
+  ⟨"Host: an IPv6 literal of eight hextets, full or with one :: run, is accepted; with nine it is not", fun r => Id.run do
+    let mut r := r
+    let mut hs : List String := []
+    for _ in [0:8] do
+      let (z, r1) := r.nat 3
+      let (v, r2) := r1.nat 65536
+      r := r2
+      hs := hs ++ [if z == 0 then "0" else String.ofList ((Nat.toDigits 16 v))]
+    let (a, r1) := r.nat 8
+    let (len, r2) := r1.nat (8 - a + 1)
+    r := r2
+    let full := ":".intercalate hs
+    let compressed := if len < 2 then full else
+      ":".intercalate (hs.take a) ++ "::" ++ ":".intercalate (hs.drop (a + len))
+    let compressedOk := len < 2 || (parseHostHeader ("[" ++ compressed ++ "]")).isSome
+    let nine := (parseHostHeader ("[" ++ full ++ ":1]")).isNone
+    return (check "ipv6" ((parseHostHeader ("[" ++ full ++ "]")).isSome && compressedOk && nine)
+      (fun _ => s!"{full} / {compressed}"), r)⟩
+]
 
 def main (args : List String) : IO UInt32 := do
   let seed := (args.head? >>= String.toNat?).getD 88172645463325252
   let cases := 200
   let mut rng : Rng := { s := UInt64.ofNat seed }
   let mut failures := 0
-  for p in properties do
+  for p in properties ++ gzipProps do
     let mut failed : Option String := none
     for _ in [0:cases] do
       if failed.isSome then break
@@ -235,5 +296,5 @@ def main (args : List String) : IO UInt32 := do
     | some why =>
       failures := failures + 1
       IO.println s!"FAIL  {p.name}: {why}  (seed {seed})"
-  IO.println s!"{properties.length} properties, {failures} failing (seed {seed})"
+  IO.println s!"{properties.length + gzipProps.length} properties, {failures} failing (seed {seed})"
   return if failures == 0 then 0 else 1

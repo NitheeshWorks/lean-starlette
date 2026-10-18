@@ -291,7 +291,7 @@ theorem chunk_entry (d : List (String × String)) (p : String × String) (hk : i
     · simpa using hkstrip
     · simpa [pyStrip_space_cons] using hkstrip
   obtain ⟨hq1, hq2⟩ := quote_ends v.toList
-  unfold cookieChunk
+  unfold cookieChunk cookieChunkKV
   simp only [cookieEntry, ← List.append_assoc]
   rw [splitFirst_append _ _ _ heq]
   simp only [hwsstrip, pyStrip_of_ends hq1 hq2, cookieUnquote_quote, String.ofList_toList]
@@ -317,14 +317,110 @@ theorem fold_entries : ∀ (d rest : List (String × String)), (∀ q ∈ rest, 
     rw [fold_entries (d ++ [q]) rest (fun x hx => hr x (by simp [hx])) (by simpa using hn)]
     simp
 
+/-! ## The linear-time parser computes the specification -/
+
+/-- A `CookieDict` represents a list `dict`: same entries, distinct names,
+and the index gives each name's position. -/
+structure CookieDict.Rep (d : CookieDict) (l : List (String × String)) : Prop where
+  items : d.items.toList = l
+  nodup : (l.map Prod.fst).Nodup
+  some_ : ∀ k i, d.index[k]? = some i → ∃ h : i < l.length, l[i].1 = k
+  none_ : ∀ k, d.index[k]? = none → ∀ p ∈ l, p.1 ≠ k
+
+theorem set_eq_map (l : List (String × String)) (k v : String) (i : Nat) (hi : i < l.length)
+    (hk : l[i].1 = k) (hn : (l.map Prod.fst).Nodup) :
+    l.set i (k, v) = l.map (fun p => if p.1 == k then (p.1, v) else p) := by
+  apply List.ext_getElem (by simp)
+  intro j h1 h2
+  simp only [List.getElem_set, List.getElem_map]
+  by_cases hij : i = j
+  · subst hij; simp [hk]
+  · have hj : j < l.length := by simpa using h2
+    have hne : l[j].1 ≠ k := by
+      intro e
+      exact hij (hn.eq_of_getElem_eq (by simpa using hi) (by simpa using hj) (by simp [hk, e]))
+    simp [hij, hne]
+
+theorem CookieDict.set_rep {d : CookieDict} {l : List (String × String)} (h : d.Rep l) (k v : String) :
+    (d.set k v).Rep (dictSet l k v) := by
+  unfold CookieDict.set dictSet
+  cases hidx : d.index[k]? with
+  | some i =>
+    obtain ⟨hi, hk⟩ := h.some_ k i hidx
+    have hany : l.any (·.1 == k) = true := List.any_eq_true.2 ⟨l[i], List.getElem_mem hi, by simp [hk]⟩
+    simp only [hany, ite_true]
+    have hmap : (l.map fun p => if p.1 == k then (p.1, v) else p).map Prod.fst = l.map Prod.fst := by
+      simp only [List.map_map]; congr 1; funext p; simp only [Function.comp_apply]; split <;> rfl
+    refine ⟨?_, ?_, ?_, ?_⟩
+    · simp [Array.set!, Array.toList_setIfInBounds, h.items, set_eq_map l k v i hi hk h.nodup]
+    · rw [hmap]; exact h.nodup
+    · intro k' j hj
+      obtain ⟨hj', e⟩ := h.some_ k' j hj
+      refine ⟨by simpa using hj', ?_⟩
+      simp only [List.getElem_map]
+      split <;> exact e
+    · intro k' hn p hp
+      obtain ⟨q, hq, rfl⟩ := List.mem_map.1 hp
+      have := h.none_ k' hn q hq
+      split <;> exact this
+  | none =>
+    have hany : l.any (·.1 == k) = false := by
+      simp only [List.any_eq_false, beq_iff_eq]; exact h.none_ k hidx
+    simp only [hany, Bool.false_eq_true, ite_false]
+    have hsz : d.items.size = l.length := by rw [← Array.length_toList, h.items]
+    refine ⟨by simp [h.items], ?_, ?_, ?_⟩
+    · simp only [List.map_append, List.map_cons, List.map_nil, List.nodup_append, List.nodup_cons,
+        List.not_mem_nil, not_false_eq_true, List.nodup_nil, and_self, List.mem_cons, List.mem_map,
+        true_and, h.nodup]
+      intro a ha b hb e
+      subst e
+      obtain ⟨p, hp, rfl⟩ := ha
+      exact h.none_ k hidx p hp (by simpa using hb)
+    · intro k' j hj
+      rw [Std.HashMap.getElem?_insert] at hj
+      by_cases e : (k == k') = true
+      · simp only [e, ite_true, Option.some.injEq] at hj
+        subst hj
+        have : k = k' := by simpa using e
+        exact ⟨by simp [hsz], by simp [hsz, this]⟩
+      · simp only [e, Bool.false_eq_true, ite_false] at hj
+        obtain ⟨hj', e2⟩ := h.some_ k' j hj
+        exact ⟨by simp; omega, by rw [List.getElem_append_left hj']; exact e2⟩
+    · intro k' hn p hp
+      rw [Std.HashMap.getElem?_insert] at hn
+      by_cases e : (k == k') = true
+      · simp [e] at hn
+      · simp only [e, Bool.false_eq_true, ite_false] at hn
+        rcases List.mem_append.1 hp with hp | hp
+        · exact h.none_ k' hn p hp
+        · simp only [List.mem_singleton] at hp
+          subst hp
+          simpa using e
+
+theorem CookieDict.fold_rep : ∀ (cs : List (List Char)) (d : CookieDict) (l : List (String × String)),
+    d.Rep l → (cs.foldl CookieDict.chunk d).Rep (cs.foldl cookieChunk l)
+  | [], _, _, h => h
+  | c :: cs, d, l, h => by
+    simp only [List.foldl_cons]
+    apply CookieDict.fold_rep cs
+    unfold CookieDict.chunk cookieChunk
+    cases cookieChunkKV c with
+    | none => exact h
+    | some kv => exact CookieDict.set_rep h kv.1 kv.2
+
+/-- **The linear-time `cookieParser` is `cookieParserSpec`.** -/
+theorem cookieParser_eq_spec (s : String) : cookieParser s = cookieParserSpec s :=
+  (CookieDict.fold_rep _ {} [] ⟨rfl, List.nodup_nil, by simp, by simp⟩).items
+
 /-- **`cookie_parser` reads back what a browser sends for cookies set with
 `set_cookie`**: legal, distinct names and any values. -/
 theorem cookie_parse_print (jar : List (String × String)) (hk : ∀ p ∈ jar, isCookieKey p.1 = true)
     (hd : (jar.map Prod.fst).Nodup) : cookieParser (cookieHeader jar) = jar := by
+  rw [cookieParser_eq_spec]
   cases jar with
-  | nil => simp [cookieParser, cookieHeader, splitAll_eq_spec, splitSpec, cookieChunk, splitFirst, splitFirst.go, pyStrip]
+  | nil => simp [cookieParserSpec, cookieHeader, splitAll_eq_spec, splitSpec, cookieChunk, cookieChunkKV, splitFirst, splitFirst.go, pyStrip]
   | cons p rest =>
-    unfold cookieParser
+    unfold cookieParserSpec
     rw [splitAll_eq_spec, cookieHeader_toList, split_header p rest (hk p (by simp)) (fun q hq => hk q (by simp [hq]))]
     simp only [List.foldl_cons]
     rw [show cookieEntry p = [] ++ cookieEntry p from rfl, chunk_entry [] p (hk p (by simp)) [] (Or.inl rfl) (by simp)]
@@ -344,7 +440,7 @@ theorem lookup_filter_self (k : String) : ∀ (J : CookieJar), (J.filter (·.1 !
       simp [List.filter, hne, List.lookup, this, lookup_filter_self k J]
 
 theorem lookup_filter_append (k x : String) : ∀ (J : CookieJar), (J.filter (·.1 != k) ++ [(k, x)]).lookup k = some x
-  | [] => by simp [List.lookup]
+  | [] => by simp
   | (a, b) :: J => by
     by_cases h : a = k
     · subst h; simp [lookup_filter_append a x J]

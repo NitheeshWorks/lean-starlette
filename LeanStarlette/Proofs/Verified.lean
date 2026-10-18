@@ -118,6 +118,7 @@ structure VerifiedMiddleware where
   corsPreflight : Spec.CorsPreflight
   corsAllowedOrigin : Spec.CorsAllowedOrigin
   cookieParsePrint : Spec.CookieParsePrint
+  cookieParserLinear : ∀ s, cookieParser s = cookieParserSpec s
   setCookieDeleteCookie : Spec.SetCookieDeleteCookie
   sessionSignVerify : Spec.SessionSignVerify
   gzipMinimumSize : Spec.GzipMinimumSize
@@ -130,6 +131,7 @@ theorem theVerifiedMiddleware : VerifiedMiddleware where
   corsPreflight := cors_preflight
   corsAllowedOrigin := cors_allowed_origin
   cookieParsePrint := cookie_parse_print
+  cookieParserLinear := cookieParser_eq_spec
   setCookieDeleteCookie := fun r jar k v hk => ⟨set_cookie_receive r jar k v hk, delete_cookie_receive r jar k hk⟩
   sessionSignVerify := fun t d _ _ _ hage hi hk hh => session_sign_verify t d hage hi hk hh
   gzipMinimumSize := gzip_minimum_size
