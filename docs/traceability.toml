@@ -353,6 +353,14 @@ realises = ["LeanStarlette.sendFileRange", "LeanStarlette.fileChunkSize"]
 test = ["tests/Bench.lean"]
 
 [[requirement]]
+id = "routing.int-digits"
+upstream = "starlette/convertors.py:IntegerConvertor.convert (UP-052)"
+title = "An int path segment of more than 4300 digits is a 404 in linear time (upstream: int() ValueError, 500); long non-matching paths are linear"
+status = "deviation"
+realises = ["Keel.Convertor.int", "LeanStarlette.BaseRoute.matches"]
+test = ["tests/Conformance.lean::benchCases"]
+
+[[requirement]]
 id = "excluded.host-websocket-lifespan"
 upstream = "tests/test_routing.py::test_host_routing"
 title = "Host routes, WebSocketRoute, lifespan, class endpoints: later cards (m7)"

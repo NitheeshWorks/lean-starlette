@@ -748,6 +748,13 @@ def wideObject (n : Nat) : ByteArray := Id.run do
     out := out ++ s!"\"key{String.ofList (List.replicate (6 - k.length) '0')}{k}\":{i % 10}".toUTF8
   out.push 125
 
+/-- Routes for the long-path bounds: an int capture, a capture before a
+literal, a path capture before a literal. -/
+def benchRoutes : Application := Starlette (routes := [
+  Route "/items/{item_id:int}" (fun (_ : Request) => PlainTextResponse "item"),
+  Route "/users/{name}/posts" (fun (_ : Request) => PlainTextResponse "posts"),
+  Route "/files/{rest:path}/end" (fun (_ : Request) => PlainTextResponse "file")])
+
 def benchCases : List Case := [
   ⟨"bench: request.json() on a 100k-key object (upstream 0.11 s; bound 0.25 s)", "100k-key 1.4 MB JSON body", do
     let body := wideObject 100000
@@ -759,7 +766,24 @@ def benchCases : List Case := [
     let r ← TestClient.request app "POST" "/" [("content-type", "application/json")] body
     let ms := (← IO.monoMsNow) - t0
     IO.println s!"      {body.size} bytes, {r.text} keys in {ms} ms"
-    ok (body.size ≥ 1400000 && r.status_code == 200 && r.text == "100000" && ms ≤ 250)⟩
+    ok (body.size ≥ 1400000 && r.status_code == 200 && r.text == "100000" && ms ≤ 250)⟩,
+  ⟨"bench: 65000-char non-matching paths (upstream 404 in 20 ms; bound 50 ms)", "long non-matching paths", do
+    let a := String.ofList (List.replicate 64990 'a')
+    let mut good := true
+    for path in [s!"/items/{a}", s!"/users/{a}", s!"/users/{a}/post", s!"/files/{a}/end/x"] do
+      let t0 ← IO.monoMsNow
+      let r ← benchRoutes.call { path := path }
+      let ms := (← IO.monoMsNow) - t0
+      IO.println s!"      {path.length} chars: {r.status_code} in {ms} ms"
+      good := good && r.status_code == 404 && ms ≤ 50
+    ok good⟩,
+  ⟨"bench + deviation UP-052: a 65000-digit int segment is 404 (upstream 500; bound 50 ms)", "65000-digit int segment", do
+    let t0 ← IO.monoMsNow
+    let r ← benchRoutes.call { path := s!"/items/{String.ofList (List.replicate 65000 '7')}" }
+    let ms := (← IO.monoMsNow) - t0
+    let r2 ← benchRoutes.call { path := s!"/items/{String.ofList (List.replicate 4300 '7')}" }
+    IO.println s!"      {r.status_code} in {ms} ms; 4300 digits: {r2.status_code}"
+    ok (r.status_code == 404 && ms ≤ 50 && r2.status_code == 200)⟩
 ]
 
 /-! ## Files, static files, streaming, background tasks: golden from Starlette 1.8.0

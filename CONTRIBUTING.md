@@ -130,6 +130,9 @@ Each has a `status = "deviation"` row in `docs/traceability.toml`.
 * **Background tasks** are `IO` actions (`BackgroundTask(func, *args)` is the
   closure); their order is proved for `runAll` in every lawful monad, since
   core Lean has no `LawfulMonad IO` instance, and `run` is `runAll` at `IO`.
+* **An `int` path segment of more than 4300 digits** does not match (404),
+  as Keel's `int` convertor caps its digits before converting. Upstream's
+  regex matches and then `int()` raises, a 500 (UP-052).
 * **Transport limits.** `Application.run` and `Application.exchange`
   default to uvicorn's effective limits (measured against uvicorn 0.54 with
   Starlette 1.8.0 on the same raw requests): any number of query parameters,
@@ -160,14 +163,12 @@ Each has a `status = "deviation"` row in `docs/traceability.toml`.
   (`boundedDigits?`, `digitsValueChunked_eq`). The `Host` port is at most five
   significant digits. JSON numbers are bounded by lean-json.
 
-### Open: cost of matching paths (lean-keel)
+### Cost of matching paths
 
-Path matching runs on Keel.Route. Measured at Keel 6f70d3f, compiled
-(`lake build bench`): a path that does not match a template with a capture
-before a literal costs O(n²) in its length (`/s/{a}/x` against `/s/` + 65000
-characters: 75 s), and `int`/`float` captures render with a quadratic
-`Codec.decimal` (65536 digits: 11 s). Both are requested from lean-keel (card
-notes on xpnwkxj1gfz9); this repository takes the fix with `lake update Keel`.
+Path matching runs on Keel.Route, linear in the path since Keel d7ff26d:
+65000-character paths that do not match take 5 to 13 ms (conformance
+`benchCases`, bound 50 ms; upstream 20 ms). Before, a capture followed by a
+literal cost O(n²) (75 s at 65000 characters).
 
 ### Large JSON bodies
 

@@ -23,7 +23,7 @@
    "type": "git",
    "subDir": null,
    "scope": "",
-   "rev": "6f70d3fe119e3e9c8c4402b14e841dce5a0143ad",
+   "rev": "d7ff26d82760f7f1823d2dc977489c7a3ab960cf",
    "name": "Keel",
    "manifestFile": "lake-manifest.json",
    "inputRev": "main",
